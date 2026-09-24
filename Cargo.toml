@@ -1,0 +1,4 @@
+[workspace]
+members = ["benchy-cli", "benchy-lib", "benchy-runner"]
+resolver = "3"
+

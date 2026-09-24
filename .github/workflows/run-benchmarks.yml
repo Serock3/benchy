@@ -1,0 +1,64 @@
+name: Run benchmarks
+
+on:
+  workflow_call:
+    inputs:
+      benchmarks:
+        description: Comma or space-delimited benchmark IDs, or "default"/"all"
+        required: false
+        default: default
+        type: string
+      manifest-path:
+        description: Path to the repository-local benchmark workspace manifest
+        required: false
+        default: benchmarks/Cargo.toml
+        type: string
+      runner-labels:
+        description: JSON array of labels identifying the benchmark controller
+        required: false
+        default: '["self-hosted", "Linux", "benchy"]'
+        type: string
+
+permissions: {}
+
+jobs:
+  benchmark:
+    name: Run ${{ inputs.benchmarks }}
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout benchmark definitions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          path: source
+      - name: Checkout Benchy
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: Serock3/benchy
+          path: benchy
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+      - name: Build benchmark controller
+        working-directory: benchy
+        run: cargo build --locked --release --package benchy-cli
+      - name: Run benchmarks
+        working-directory: source
+        env:
+          BENCHY_PEER: ${{ vars.BENCHY_PEER }}
+          BENCHY_ALICE_ADDRESS: ${{ vars.BENCHY_ALICE_ADDRESS }}
+          BENCHY_BOB_ADDRESS: ${{ vars.BENCHY_BOB_ADDRESS }}
+        run: >-
+          ../benchy/target/release/benchy-cli run
+          --manifest-path "${{ inputs.manifest-path }}"
+          --benchmarks "${{ inputs.benchmarks }}"
+          --result-dir ../benchmark-results
+      - name: Upload benchmark results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: benchmark-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: benchmark-results
+          if-no-files-found: warn
+
