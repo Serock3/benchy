@@ -1,4 +1,3 @@
 [workspace]
-members = ["benchy-cli", "benchy-lib", "benchy-runner"]
+members = ["benchy-cli", "benchy-lib", "benchy-runner", "benchy-store"]
 resolver = "3"
-

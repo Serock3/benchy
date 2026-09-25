@@ -14,14 +14,21 @@ establishes the tunnel, and measures it with iperf3.
   sequentially.
 - `benchy-runner` provides result recording, GitHub metadata, iperf parsing, and a cross-workflow
   machine lock.
-- `benchy-lib` contains the temporary result artifact types shared by benchmark crates and the
+- `benchy-lib` contains the versioned result artifact types shared by benchmark crates and the
   runner.
+- `benchy-store` validates and transactionally ingests result documents into SQLite.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
 
 The per-run JSON files use the versioned result schema documented in
 [`docs/result-schema-v1.md`](docs/result-schema-v1.md). They are uploaded as diagnostic artifacts
-and printed verbatim in the workflow run summary for quick inspection. SQLite-backed storage,
-migration tooling, and the egui results interface will consume the same schema.
+and printed verbatim in the workflow run summary for quick inspection. The reusable workflow also
+ingests them into a persistent SQLite database for the results interface.
+
+By default, the database is stored at
+`$XDG_DATA_HOME/benchy/results.sqlite3`, or `$HOME/.local/share/benchy/results.sqlite3` when
+`XDG_DATA_HOME` is unset. A caller can override it with the reusable workflow's `database-path`
+input. The database uses WAL mode, foreign-key enforcement, and transactional batch ingestion.
+Re-running the same GitHub workflow attempt updates its existing rows instead of duplicating them.
 
 ## Local layout
 
@@ -43,6 +50,10 @@ cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- list \
 cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- run \
   --manifest-path gotatun/benchmarks/Cargo.toml \
   --benchmarks default
+
+cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- ingest \
+  --database /tmp/benchy-results.sqlite3 \
+  --result-dir benchmark-results
 ```
 
 ## Controller prerequisites

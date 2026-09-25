@@ -18,6 +18,11 @@ on:
         required: false
         default: '["self-hosted", "Linux", "benchy"]'
         type: string
+      database-path:
+        description: Persistent SQLite path; empty uses the runner user data directory
+        required: false
+        default: ''
+        type: string
 
 permissions: {}
 
@@ -26,6 +31,8 @@ jobs:
     name: Run ${{ inputs.benchmarks }}
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 120
+    env:
+      BENCHY_RESULT_DIR: benchmark-results/${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
@@ -56,13 +63,13 @@ jobs:
           ../benchy/target/release/benchy-cli run
           --manifest-path "${{ inputs.manifest-path }}"
           --benchmarks "${{ inputs.benchmarks }}"
-          --result-dir ../benchmark-results
+          --result-dir "../$BENCHY_RESULT_DIR"
       - name: Show raw benchmark results
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           shopt -s nullglob
-          results=(benchmark-results/*.json)
+          results=("$BENCHY_RESULT_DIR"/*.json)
           {
             echo '## Raw benchmark results'
             if (( ${#results[@]} == 0 )); then
@@ -79,10 +86,20 @@ jobs:
               done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Persist benchmark results
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          BENCHY_DATABASE_PATH: ${{ inputs.database-path }}
+        run: |
+          database_path="${BENCHY_DATABASE_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/benchy/results.sqlite3}"
+          benchy/target/release/benchy-cli ingest \
+            --database "$database_path" \
+            --result-dir "$BENCHY_RESULT_DIR"
       - name: Upload benchmark results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: benchmark-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: benchmark-results
+          path: ${{ env.BENCHY_RESULT_DIR }}
           if-no-files-found: warn

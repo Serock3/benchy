@@ -1,6 +1,13 @@
-use std::{collections::BTreeSet, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result, bail};
+use benchy_lib::Benchmark;
+use benchy_store::Store;
 use cargo_metadata::{MetadataCommand, Package};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
@@ -23,6 +30,13 @@ enum Commands {
         manifest_path: PathBuf,
         #[arg(long, default_value = "default")]
         benchmarks: String,
+        #[arg(long, default_value = "benchmark-results")]
+        result_dir: PathBuf,
+    },
+    /// Add result JSON documents to a persistent SQLite database.
+    Ingest {
+        #[arg(long)]
+        database: PathBuf,
         #[arg(long, default_value = "benchmark-results")]
         result_dir: PathBuf,
     },
@@ -52,7 +66,44 @@ fn main() -> Result<()> {
             benchmarks,
             result_dir,
         } => run(manifest_path, &benchmarks, result_dir),
+        Commands::Ingest {
+            database,
+            result_dir,
+        } => ingest(&database, &result_dir),
     }
+}
+
+fn ingest(database: &Path, result_dir: &Path) -> Result<()> {
+    let mut paths = fs::read_dir(result_dir)
+        .with_context(|| format!("failed to read {}", result_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "json")
+    });
+    paths.sort();
+
+    let benchmarks = paths
+        .iter()
+        .map(|path| {
+            let bytes = fs::read(path)
+                .with_context(|| format!("failed to read result {}", path.display()))?;
+            serde_json::from_slice::<Benchmark>(&bytes)
+                .with_context(|| format!("invalid benchmark result {}", path.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut store = Store::open(database)?;
+    let report = store.ingest(&benchmarks)?;
+    println!(
+        "Stored {} benchmark result(s) in {} ({} inserted, {} updated)",
+        report.total(),
+        database.display(),
+        report.inserted,
+        report.updated
+    );
+    Ok(())
 }
 
 fn run(manifest_path: PathBuf, selection: &str, result_dir: PathBuf) -> Result<()> {

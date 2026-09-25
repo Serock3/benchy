@@ -1,0 +1,11 @@
+[package]
+name = "benchy-store"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+anyhow = "1.0"
+benchy-lib = { path = "../benchy-lib" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_json = "1.0"

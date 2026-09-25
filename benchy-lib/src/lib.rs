@@ -133,6 +133,15 @@ pub enum BenchmarkStatus {
     Failed,
 }
 
+impl BenchmarkStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Measurement {
     pub label: String,
@@ -159,6 +168,17 @@ pub enum Unit {
     Percent,
     Seconds,
     Count,
+}
+
+impl Unit {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BitsPerSecond => "bits_per_second",
+            Self::Percent => "percent",
+            Self::Seconds => "seconds",
+            Self::Count => "count",
+        }
+    }
 }
 
 fn format_percent(value: f64) -> String {

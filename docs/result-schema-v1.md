@@ -83,3 +83,7 @@ never be recorded in either map.
 best-effort parse. The unversioned JSON produced during the initial vertical slice and the older
 app-bench JSONL format are pre-v1 inputs; migration tooling may convert them explicitly, but they
 are not valid v1 documents.
+
+The SQLite database has its own independently versioned schema, tracked with SQLite's
+`user_version` pragma. JSON schema v1 documents are normalized into runs, measurements,
+parameters, and environment tables; the original document is also retained with each run.
