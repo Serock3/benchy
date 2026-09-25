@@ -1,0 +1,17 @@
+[Unit]
+Description=Benchy results interface
+After=network-online.target
+
+[Service]
+Type=simple
+User=mole
+WorkingDirectory=/home/mole/benchy
+Environment=BENCHY_DATABASE_PATH=/home/mole/.local/share/benchy/results.sqlite3
+Environment=BENCHY_FRONTEND_PATH=/home/mole/benchy/benchy-gui/dist
+Environment=ROCKET_ADDRESS=127.0.0.1
+Environment=ROCKET_PORT=8001
+ExecStart=/home/mole/benchy/target/release/benchy-serve
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

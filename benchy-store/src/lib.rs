@@ -1,13 +1,29 @@
 use std::{fs, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use benchy_lib::{Benchmark, RESULT_SCHEMA_VERSION};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use benchy_lib::{Benchmark, BenchmarkGroup, BenchmarkStatus, RESULT_SCHEMA_VERSION};
+use chrono::{DateTime, Utc};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use serde::Serialize;
 
 const DATABASE_SCHEMA_VERSION: u32 = 1;
 
 pub struct Store {
     connection: Connection,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RunSummary {
+    pub id: i64,
+    #[serde(flatten)]
+    pub group: BenchmarkGroup,
+    pub commit: String,
+    pub branch: String,
+    pub date: DateTime<Utc>,
+    pub workflow_run_id: Option<String>,
+    pub workflow_run_attempt: String,
+    pub status: BenchmarkStatus,
+    pub measurement_count: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +50,21 @@ impl Store {
         }
         let connection = Connection::open(path)
             .with_context(|| format!("failed to open SQLite database {}", path.display()))?;
-        Self::from_connection(connection)
+        Self::from_write_connection(connection)
+    }
+
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| {
+                format!(
+                    "failed to open SQLite database {} read-only",
+                    path.display()
+                )
+            })?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        require_current_schema(&connection)?;
+        Ok(Self { connection })
     }
 
     pub fn ingest(&mut self, benchmarks: &[Benchmark]) -> Result<IngestReport> {
@@ -55,14 +85,96 @@ impl Store {
         Ok(report)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self> {
+    /// Return complete results in chronological order.
+    pub fn benchmarks(&self) -> Result<Vec<Benchmark>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT raw_json FROM runs ORDER BY started_at, id")?;
+        let documents = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        documents
+            .into_iter()
+            .map(|document| {
+                serde_json::from_str(&document)
+                    .context("database contains an invalid result document")
+            })
+            .collect()
+    }
+
+    /// Return the newest runs first, for diagnostics and administration.
+    pub fn latest_runs(&self, limit: usize) -> Result<Vec<RunSummary>> {
+        let limit = i64::try_from(limit).context("run limit is too large")?;
+        let mut statement = self.connection.prepare(
+            "SELECT runs.id, runs.repository, runs.benchmark, runs.commit_hash,
+                    runs.branch, runs.started_at, runs.workflow_run_id,
+                    runs.workflow_run_attempt, runs.status, count(measurements.metric_id)
+             FROM runs
+             LEFT JOIN measurements ON measurements.run_id = runs.id
+             GROUP BY runs.id
+             ORDER BY runs.started_at DESC, runs.id DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    repository,
+                    name,
+                    commit,
+                    branch,
+                    date,
+                    workflow_run_id,
+                    workflow_run_attempt,
+                    status,
+                    measurement_count,
+                )| {
+                    Ok(RunSummary {
+                        id,
+                        group: BenchmarkGroup { repository, name },
+                        commit,
+                        branch,
+                        date: DateTime::parse_from_rfc3339(&date)
+                            .with_context(|| format!("run {id} has invalid date {date:?}"))?
+                            .with_timezone(&Utc),
+                        workflow_run_id,
+                        workflow_run_attempt,
+                        status: parse_status(id, &status)?,
+                        measurement_count: u64::try_from(measurement_count).with_context(|| {
+                            format!("run {id} has a negative measurement count")
+                        })?,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    fn from_write_connection(connection: Connection) -> Result<Self> {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;",
         )?;
 
-        let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let version = database_schema_version(&connection)?;
         match version {
             0 => migrate_to_v1(&connection)?,
             DATABASE_SCHEMA_VERSION => {}
@@ -77,7 +189,32 @@ impl Store {
 
     #[cfg(test)]
     fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?)
+        Self::from_write_connection(Connection::open_in_memory()?)
+    }
+}
+
+fn database_schema_version(connection: &Connection) -> Result<u32> {
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .context("failed to read database schema version")
+}
+
+fn require_current_schema(connection: &Connection) -> Result<()> {
+    let version = database_schema_version(connection)?;
+    if version == DATABASE_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        bail!(
+            "database schema version {version} is not supported; expected {DATABASE_SCHEMA_VERSION}"
+        )
+    }
+}
+
+fn parse_status(run_id: i64, status: &str) -> Result<BenchmarkStatus> {
+    match status {
+        "success" => Ok(BenchmarkStatus::Success),
+        "failed" => Ok(BenchmarkStatus::Failed),
+        _ => bail!("run {run_id} has invalid status {status:?}"),
     }
 }
 
@@ -340,6 +477,12 @@ mod tests {
                 2_500_000_000.0
             )
         );
+
+        assert_eq!(store.benchmarks().unwrap(), [result(2_500_000_000.0)]);
+        let summaries = store.latest_runs(10).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].measurement_count, 1);
+        assert_eq!(summaries[0].group.name, "gotatun-throughput");
     }
 
     #[test]
@@ -370,7 +513,19 @@ mod tests {
     fn rejects_newer_database_schema() {
         let connection = Connection::open_in_memory().unwrap();
         connection.pragma_update(None, "user_version", 2).unwrap();
-        let error = Store::from_connection(connection).err().unwrap();
+        let error = Store::from_write_connection(connection).err().unwrap();
         assert!(error.to_string().contains("newer than supported"));
+    }
+
+    #[test]
+    fn opens_an_existing_database_read_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("results.sqlite3");
+        let mut writer = Store::open(&path).unwrap();
+        writer.ingest(&[result(1.0)]).unwrap();
+        drop(writer);
+
+        let reader = Store::open_read_only(&path).unwrap();
+        assert_eq!(reader.benchmarks().unwrap(), [result(1.0)]);
     }
 }

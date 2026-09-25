@@ -151,7 +151,13 @@ pub struct Measurement {
 
 impl Measurement {
     pub fn format_f64(&self) -> impl Fn(f64) -> String {
-        match self.unit {
+        self.unit.format_f64()
+    }
+}
+
+impl Unit {
+    pub fn format_f64(self) -> impl Fn(f64) -> String {
+        match self {
             Unit::BitsPerSecond => format_bits_per_second,
             Unit::Percent => format_percent,
             Unit::Seconds => format_seconds,
@@ -160,7 +166,7 @@ impl Measurement {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Unit {

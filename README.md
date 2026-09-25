@@ -17,6 +17,8 @@ establishes the tunnel, and measures it with iperf3.
 - `benchy-lib` contains the versioned result artifact types shared by benchmark crates and the
   runner.
 - `benchy-store` validates and transactionally ingests result documents into SQLite.
+- `benchy-serve` exposes stored results as JSON and serves the web frontend.
+- `benchy-gui` is the egui frontend, with separate plots for each measurement unit.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
 
 The per-run JSON files use the versioned result schema documented in
@@ -54,7 +56,46 @@ cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- run \
 cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- ingest \
   --database /tmp/benchy-results.sqlite3 \
   --result-dir benchmark-results
+
+cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- inspect \
+  --database /tmp/benchy-results.sqlite3
 ```
+
+`inspect` prints the newest runs, their status, commit, and measurement count. Add `--json` for
+machine-readable output.
+
+## Results interface
+
+Build the WASM frontend and start the server from the Benchy repository root:
+
+```console
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+cd benchy-gui
+trunk build --release
+cd ..
+cargo run --release --package benchy-serve
+```
+
+The server reads the same default database as the workflow and serves Rocket's default address,
+`http://127.0.0.1:8000`. Configure it with:
+
+- `BENCHY_DATABASE_PATH` for a different SQLite database.
+- `BENCHY_FRONTEND_PATH` for a different frontend distribution directory.
+- Rocket configuration such as `ROCKET_ADDRESS` and `ROCKET_PORT` for the listening socket.
+
+The API endpoints are `/api/benchmarks` and `/api/health`. Database access is read-only and runs on
+blocking worker threads so concurrent WAL writes from benchmark workflows remain safe.
+
+For Alice, build the frontend on a development machine and copy `benchy-gui/dist` to a persistent
+Benchy checkout at `/home/mole/benchy/benchy-gui/dist`. Build the server in that checkout with
+`cargo build --locked --release --package benchy-serve`. The example
+[`deploy/benchy-serve.service`](deploy/benchy-serve.service) runs it as `mole` on
+`127.0.0.1:8001`, leaving the existing web service alone. Install it with
+`sudo cp deploy/benchy-serve.service /etc/systemd/system/`, then
+`sudo systemctl daemon-reload` and `sudo systemctl enable --now benchy-serve.service`.
+From a workstation that can SSH to Alice, `ssh -L 8001:127.0.0.1:8001 mole@benchy-alice` makes
+the interface available at `http://127.0.0.1:8001`.
 
 ## Controller prerequisites
 

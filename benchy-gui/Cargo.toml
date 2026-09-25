@@ -1,0 +1,26 @@
+[package]
+name = "benchy-gui"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+benchy-lib = { path = "../benchy-lib" }
+eframe = { version = "0.32", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+] }
+egui = "0.32"
+egui_extras = "0.32"
+egui_plot = "0.33"
+ehttp = { version = "0.5", features = ["json"] }
+log = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen-futures = "0.4"
+web-sys = "0.3"

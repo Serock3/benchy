@@ -40,6 +40,15 @@ enum Commands {
         #[arg(long, default_value = "benchmark-results")]
         result_dir: PathBuf,
     },
+    /// Show the newest runs stored in a SQLite database.
+    Inspect {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,7 +79,41 @@ fn main() -> Result<()> {
             database,
             result_dir,
         } => ingest(&database, &result_dir),
+        Commands::Inspect {
+            database,
+            limit,
+            json,
+        } => inspect(&database, limit, json),
     }
+}
+
+fn inspect(database: &Path, limit: usize, json: bool) -> Result<()> {
+    if limit == 0 {
+        bail!("--limit must be greater than zero");
+    }
+    let store = Store::open_read_only(database)?;
+    let runs = store.latest_runs(limit)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&runs)?);
+    } else if runs.is_empty() {
+        println!("No benchmark runs stored in {}", database.display());
+    } else {
+        for run in runs {
+            let commit = run.commit.chars().take(12).collect::<String>();
+            println!(
+                "#{}  {}  {:7}  {}/{}  {}  {}  {} measurement(s)",
+                run.id,
+                run.date.to_rfc3339(),
+                run.status.as_str(),
+                run.group.repository,
+                run.group.name,
+                run.branch,
+                commit,
+                run.measurement_count,
+            );
+        }
+    }
+    Ok(())
 }
 
 fn ingest(database: &Path, result_dir: &Path) -> Result<()> {
