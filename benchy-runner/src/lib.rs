@@ -98,23 +98,8 @@ impl Recorder {
             .insert(key.into(), value.to_string());
     }
 
-    pub fn record_iperf(&mut self, output: &iperf::Output) {
-        self.benchmark.values.insert(
-            "Up".to_owned(),
-            Value::Bps(output.end.sum_sent.bits_per_second),
-        );
-        self.benchmark.values.insert(
-            "Down".to_owned(),
-            Value::Bps(output.end.sum_received.bits_per_second),
-        );
-        self.benchmark.values.insert(
-            "Host CPU".to_owned(),
-            Value::Percent(output.end.cpu_utilization_percent.host_total),
-        );
-        self.benchmark.values.insert(
-            "Remote CPU".to_owned(),
-            Value::Percent(output.end.cpu_utilization_percent.remote_total),
-        );
+    pub fn value(&mut self, name: impl Into<String>, value: Value) {
+        self.benchmark.values.insert(name.into(), value);
     }
 
     pub async fn success(self) -> Result<()> {
