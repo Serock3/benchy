@@ -40,6 +40,9 @@ jobs:
           path: benchy
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          toolchain: 1.95.0
+          cache: false
       - name: Build benchmark controller
         working-directory: benchy
         run: cargo build --locked --release --package benchy-cli
@@ -61,4 +64,3 @@ jobs:
           name: benchmark-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: benchmark-results
           if-no-files-found: warn
-
