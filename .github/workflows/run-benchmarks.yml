@@ -57,6 +57,28 @@ jobs:
           --manifest-path "${{ inputs.manifest-path }}"
           --benchmarks "${{ inputs.benchmarks }}"
           --result-dir ../benchmark-results
+      - name: Show raw benchmark results
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          results=(benchmark-results/*.json)
+          {
+            echo '## Raw benchmark results'
+            if (( ${#results[@]} == 0 )); then
+              echo
+              echo '_No result files were produced._'
+            else
+              for result in "${results[@]}"; do
+                echo
+                printf '### `%s`\n\n' "$(basename "$result")"
+                echo '```json'
+                cat "$result"
+                echo
+                echo '```'
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

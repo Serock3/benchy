@@ -18,9 +18,10 @@ establishes the tunnel, and measures it with iperf3.
   runner.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
 
-The per-run JSON files are currently diagnostic artifacts. They are not the permanent result
-schema. SQLite-backed storage, migration tooling, and the egui results interface will be added after
-the first Alice/Bob smoke test.
+The per-run JSON files are currently diagnostic artifacts and are also printed verbatim in the
+workflow run summary for quick inspection. They are not the permanent result schema. SQLite-backed
+storage, migration tooling, and the egui results interface will be added after the first Alice/Bob
+smoke test.
 
 ## Local layout
 
@@ -60,4 +61,3 @@ Runtime configuration is supplied through `BENCHY_PEER`, `BENCHY_ALICE_ADDRESS`,
 
 During initial development the product workflow follows `Serock3/benchy@main`. Pin it to an
 immutable commit before using the workflow from the production repositories.
-
