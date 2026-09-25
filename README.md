@@ -18,10 +18,10 @@ establishes the tunnel, and measures it with iperf3.
   runner.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
 
-The per-run JSON files are currently diagnostic artifacts and are also printed verbatim in the
-workflow run summary for quick inspection. They are not the permanent result schema. SQLite-backed
-storage, migration tooling, and the egui results interface will be added after the first Alice/Bob
-smoke test.
+The per-run JSON files use the versioned result schema documented in
+[`docs/result-schema-v1.md`](docs/result-schema-v1.md). They are uploaded as diagnostic artifacts
+and printed verbatim in the workflow run summary for quick inspection. SQLite-backed storage,
+migration tooling, and the egui results interface will consume the same schema.
 
 ## Local layout
 

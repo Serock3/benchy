@@ -1,7 +1,37 @@
-use std::collections::BTreeMap;
+use std::{borrow::Borrow, collections::BTreeMap, fmt};
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+pub const RESULT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaVersion;
+
+impl Serialize for SchemaVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(RESULT_SCHEMA_VERSION)
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let version = u32::deserialize(deserializer)?;
+        if version == RESULT_SCHEMA_VERSION {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(format_args!(
+                "unsupported benchmark result schema version {version}"
+            )))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, PartialOrd, Eq, Ord, Hash)]
 pub struct BenchmarkGroup {
@@ -9,14 +39,9 @@ pub struct BenchmarkGroup {
     pub name: String,
 }
 
-/// ```json
-/// {
-/// "name": "network throughput",
-/// "values": { "up": { "bps": 1000.0 } }
-/// }
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Benchmark {
+    pub schema_version: SchemaVersion,
     #[serde(flatten)]
     pub group: BenchmarkGroup,
     pub commit: String,
@@ -24,10 +49,9 @@ pub struct Benchmark {
     pub commit_message: Option<String>,
     pub description: String,
     pub date: DateTime<Utc>,
-    pub values: BTreeMap<String, Value>,
+    pub measurements: BTreeMap<MetricId, Measurement>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
-    #[serde(default)]
     pub status: BenchmarkStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -37,44 +61,104 @@ pub struct Benchmark {
     pub environment: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct MetricId(String);
+
+impl MetricId {
+    pub fn new(id: impl Into<String>) -> Result<Self, InvalidMetricId> {
+        let id = id.into();
+        if is_valid_metric_id(&id) {
+            Ok(Self(id))
+        } else {
+            Err(InvalidMetricId(id))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for MetricId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Borrow<str> for MetricId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for MetricId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidMetricId(String);
+
+impl fmt::Display for InvalidMetricId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "invalid metric ID {:?}; expected lowercase dot-separated identifiers",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InvalidMetricId {}
+
+fn is_valid_metric_id(id: &str) -> bool {
+    id.split('.').all(|segment| {
+        let mut bytes = segment.bytes();
+        bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+            && bytes.all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+    })
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BenchmarkStatus {
-    #[default]
     Success,
     Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Value {
-    #[serde(rename = "bps")]
-    Bps(f64),
-    #[serde(rename = "percent")]
-    Percent(f64),
-    #[serde(rename = "seconds")]
-    Seconds(f64),
-    #[serde(rename = "count")]
-    Count(f64),
+pub struct Measurement {
+    pub label: String,
+    pub unit: Unit,
+    pub value: f64,
 }
 
-impl Value {
-    pub fn as_f64(&self) -> f64 {
-        match *self {
-            Value::Bps(bps) => bps,
-            Value::Percent(percent) => percent,
-            Value::Seconds(seconds) => seconds,
-            Value::Count(count) => count,
-        }
-    }
-
+impl Measurement {
     pub fn format_f64(&self) -> impl Fn(f64) -> String {
-        match self {
-            Value::Bps(..) => format_bits_per_second,
-            Value::Percent(..) => format_percent,
-            Value::Seconds(..) => format_seconds,
-            Value::Count(..) => format_count,
+        match self.unit {
+            Unit::BitsPerSecond => format_bits_per_second,
+            Unit::Percent => format_percent,
+            Unit::Seconds => format_seconds,
+            Unit::Count => format_count,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Unit {
+    BitsPerSecond,
+    Percent,
+    Seconds,
+    Count,
 }
 
 fn format_percent(value: f64) -> String {
@@ -136,4 +220,101 @@ fn format_bits_per_second(bps: f64) -> String {
     };
 
     format!("{value:.2} {suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+
+    use super::{
+        Benchmark, BenchmarkGroup, BenchmarkStatus, Measurement, MetricId, SchemaVersion, Unit,
+    };
+
+    #[test]
+    fn schema_v1_shape_round_trips() {
+        let benchmark = Benchmark {
+            schema_version: SchemaVersion,
+            group: BenchmarkGroup {
+                repository: "gotatun".to_owned(),
+                name: "gotatun-throughput".to_owned(),
+            },
+            commit: "abc123".to_owned(),
+            branch: "main".to_owned(),
+            commit_message: Some("Measure throughput".to_owned()),
+            description: "GotaTun throughput".to_owned(),
+            date: Utc.with_ymd_and_hms(2026, 9, 25, 12, 0, 0).unwrap(),
+            measurements: BTreeMap::from([(
+                MetricId::new("throughput.sender").unwrap(),
+                Measurement {
+                    label: "Sender throughput".to_owned(),
+                    unit: Unit::BitsPerSecond,
+                    value: 2_500_000_000.0,
+                },
+            )]),
+            run_id: Some("123456".to_owned()),
+            status: BenchmarkStatus::Success,
+            error: None,
+            parameters: BTreeMap::from([("duration_seconds".to_owned(), "30".to_owned())]),
+            environment: BTreeMap::from([("RUNNER_NAME".to_owned(), "benchy-alice".to_owned())]),
+        };
+
+        let json = serde_json::to_value(&benchmark).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "schema_version": 1,
+                "repository": "gotatun",
+                "name": "gotatun-throughput",
+                "commit": "abc123",
+                "branch": "main",
+                "commit_message": "Measure throughput",
+                "description": "GotaTun throughput",
+                "date": "2026-09-25T12:00:00Z",
+                "measurements": {
+                    "throughput.sender": {
+                        "label": "Sender throughput",
+                        "unit": "bits_per_second",
+                        "value": 2_500_000_000.0
+                    }
+                },
+                "run_id": "123456",
+                "status": "success",
+                "parameters": { "duration_seconds": "30" },
+                "environment": { "RUNNER_NAME": "benchy-alice" }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<Benchmark>(json).unwrap(),
+            benchmark
+        );
+    }
+
+    #[test]
+    fn unknown_schema_versions_are_rejected() {
+        let result = serde_json::from_value::<Benchmark>(json!({ "schema_version": 2 }));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported benchmark result schema version 2")
+        );
+    }
+
+    #[test]
+    fn metric_ids_are_stable_machine_identifiers() {
+        for valid in [
+            "throughput.sender",
+            "cpu.gotatun.up",
+            "latency.p95_seconds",
+            "reconnect.count-v2",
+        ] {
+            assert!(MetricId::new(valid).is_ok(), "{valid}");
+        }
+        for invalid in ["", "UP CPU", "cpu..up", ".cpu", "cpu.UP", "9cpu.up"] {
+            assert!(MetricId::new(invalid).is_err(), "{invalid}");
+        }
+    }
 }

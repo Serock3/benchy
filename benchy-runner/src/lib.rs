@@ -8,7 +8,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use benchy_lib::{Benchmark, BenchmarkGroup, BenchmarkStatus, Value, iperf};
+use benchy_lib::{
+    Benchmark, BenchmarkGroup, BenchmarkStatus, Measurement, MetricId, SchemaVersion, Unit, iperf,
+};
 use chrono::Utc;
 use fs2::FileExt;
 use tokio::process::Command;
@@ -18,6 +20,13 @@ pub struct BenchmarkDefinition {
     pub repository: &'static str,
     pub name: &'static str,
     pub description: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MeasurementDefinition {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub unit: Unit,
 }
 
 pub struct Recorder {
@@ -67,6 +76,7 @@ impl Recorder {
         Self {
             output: output.into(),
             benchmark: Benchmark {
+                schema_version: SchemaVersion,
                 group: BenchmarkGroup {
                     repository: definition.repository.to_owned(),
                     name: definition.name.to_owned(),
@@ -76,7 +86,7 @@ impl Recorder {
                 commit_message,
                 description: definition.description.to_owned(),
                 date: Utc::now(),
-                values: BTreeMap::new(),
+                measurements: BTreeMap::new(),
                 run_id: env::var("GITHUB_RUN_ID").ok(),
                 status: BenchmarkStatus::Success,
                 error: None,
@@ -98,8 +108,26 @@ impl Recorder {
             .insert(key.into(), value.to_string());
     }
 
-    pub fn value(&mut self, name: impl Into<String>, value: Value) {
-        self.benchmark.values.insert(name.into(), value);
+    pub fn measurement(&mut self, definition: MeasurementDefinition, value: f64) -> Result<()> {
+        let id = MetricId::new(definition.id)?;
+        if definition.label.trim().is_empty() {
+            bail!("metric {id} has an empty display label");
+        }
+        if !value.is_finite() {
+            bail!("metric {id} has a non-finite value");
+        }
+        if self.benchmark.measurements.contains_key(&id) {
+            bail!("metric {id} was recorded more than once");
+        }
+        self.benchmark.measurements.insert(
+            id,
+            Measurement {
+                label: definition.label.to_owned(),
+                unit: definition.unit,
+                value,
+            },
+        );
+        Ok(())
     }
 
     pub async fn success(self) -> Result<()> {
