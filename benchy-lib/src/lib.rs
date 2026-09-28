@@ -228,6 +228,56 @@ pub mod iperf {
         pub remote_user: f64,
         pub remote_system: f64,
     }
+
+    /// iperf3 JSON output of a UDP test. Newer iperf3 versions report the sender and
+    /// receiver summaries separately in `end.sum_sent` and `end.sum_received`; older
+    /// versions only emit the ambiguous `end.sum`, disambiguated by its `sender` flag.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct UdpOutput {
+        pub end: UdpEnd,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct UdpEnd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sum: Option<UdpSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sum_sent: Option<UdpSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sum_received: Option<UdpSummary>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct UdpSummary {
+        pub bits_per_second: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub jitter_ms: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lost_percent: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sender: Option<bool>,
+    }
+
+    impl UdpEnd {
+        /// The sender-side summary, if the test reported one.
+        pub fn sent(&self) -> Option<&UdpSummary> {
+            self.sum_sent.as_ref().or_else(|| {
+                self.sum
+                    .as_ref()
+                    .filter(|summary| summary.sender == Some(true))
+            })
+        }
+
+        /// The receiver-side summary, if the test reported one. This is the side that
+        /// carries jitter and loss statistics.
+        pub fn received(&self) -> Option<&UdpSummary> {
+            self.sum_received.as_ref().or_else(|| {
+                self.sum
+                    .as_ref()
+                    .filter(|summary| summary.sender != Some(true))
+            })
+        }
+    }
 }
 
 fn format_bits_per_second(bps: f64) -> String {
@@ -257,6 +307,7 @@ mod tests {
 
     use super::{
         Benchmark, BenchmarkGroup, BenchmarkStatus, Measurement, MetricId, SchemaVersion, Unit,
+        iperf,
     };
 
     #[test]
@@ -342,5 +393,83 @@ mod tests {
         for invalid in ["", "UP CPU", "cpu..up", ".cpu", "cpu.UP", "9cpu.up"] {
             assert!(MetricId::new(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn udp_iperf_output_parses_separate_sender_and_receiver_summaries() {
+        let json = json!({
+            "end": {
+                "sum_sent": {
+                    "bits_per_second": 900_000_000.0,
+                    "jitter_ms": 0.0,
+                    "lost_packets": 0,
+                    "packets": 7500,
+                    "lost_percent": 0.0,
+                    "sender": true
+                },
+                "sum_received": {
+                    "bits_per_second": 810_000_000.0,
+                    "jitter_ms": 0.007,
+                    "lost_packets": 75,
+                    "packets": 7425,
+                    "lost_percent": 1.0,
+                    "sender": false
+                }
+            }
+        });
+
+        let output = serde_json::from_value::<iperf::UdpOutput>(json).unwrap();
+        assert_eq!(output.end.sent().unwrap().bits_per_second, 900_000_000.0);
+        let received = output.end.received().unwrap();
+        assert_eq!(received.bits_per_second, 810_000_000.0);
+        assert_eq!(received.lost_percent, Some(1.0));
+        assert_eq!(received.jitter_ms, Some(0.007));
+    }
+
+    #[test]
+    fn udp_iperf_output_parses_legacy_ambiguous_summary() {
+        let json = json!({
+            "end": {
+                "sum": {
+                    "bits_per_second": 810_000_000.0,
+                    "jitter_ms": 0.007,
+                    "lost_percent": 1.0,
+                    "sender": false
+                }
+            }
+        });
+
+        let output = serde_json::from_value::<iperf::UdpOutput>(json).unwrap();
+        assert!(output.end.sent().is_none());
+        let received = output.end.received().unwrap();
+        assert_eq!(received.bits_per_second, 810_000_000.0);
+        assert_eq!(received.lost_percent, Some(1.0));
+    }
+
+    #[test]
+    fn udp_iperf_output_prefers_separate_summaries_over_ambiguous_one() {
+        let json = json!({
+            "end": {
+                "sum": {
+                    "bits_per_second": 700_000_000.0,
+                    "sender": true
+                },
+                "sum_sent": {
+                    "bits_per_second": 900_000_000.0,
+                    "sender": true
+                },
+                "sum_received": {
+                    "bits_per_second": 810_000_000.0,
+                    "sender": false
+                }
+            }
+        });
+
+        let output = serde_json::from_value::<iperf::UdpOutput>(json).unwrap();
+        assert_eq!(output.end.sent().unwrap().bits_per_second, 900_000_000.0);
+        assert_eq!(
+            output.end.received().unwrap().bits_per_second,
+            810_000_000.0
+        );
     }
 }

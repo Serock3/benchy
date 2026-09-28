@@ -186,6 +186,17 @@ pub async fn parse_iperf_output(output: Output) -> Result<iperf::Output> {
     serde_json::from_slice(&output.stdout).context("failed to deserialize iperf3 JSON output")
 }
 
+pub async fn parse_iperf_udp_output(output: Output) -> Result<iperf::UdpOutput> {
+    if !output.status.success() {
+        bail!(
+            "iperf3 failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("failed to deserialize iperf3 UDP JSON output")
+}
+
 pub fn default_output_path(name: &str) -> PathBuf {
     env::var_os("BENCHY_RESULT_DIR")
         .map(PathBuf::from)
