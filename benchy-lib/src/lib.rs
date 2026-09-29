@@ -274,7 +274,7 @@ pub mod iperf {
             self.sum_received.as_ref().or_else(|| {
                 self.sum
                     .as_ref()
-                    .filter(|summary| summary.sender != Some(true))
+                    .filter(|summary| summary.sender == Some(false))
             })
         }
     }
@@ -444,6 +444,19 @@ mod tests {
         let received = output.end.received().unwrap();
         assert_eq!(received.bits_per_second, 810_000_000.0);
         assert_eq!(received.lost_percent, Some(1.0));
+    }
+
+    #[test]
+    fn udp_iperf_output_without_sender_flag_has_no_side_summaries() {
+        let json = json!({
+            "end": {
+                "sum": { "bits_per_second": 810_000_000.0 }
+            }
+        });
+
+        let output = serde_json::from_value::<iperf::UdpOutput>(json).unwrap();
+        assert!(output.end.sent().is_none());
+        assert!(output.end.received().is_none());
     }
 
     #[test]
