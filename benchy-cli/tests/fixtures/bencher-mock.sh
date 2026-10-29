@@ -14,6 +14,10 @@ case "$1 $2" in
     ;;
   'measure create') echo '{}' ;;
   'run --project')
+    if [[ -n "${MOCK_EXPECT_SHA:-}" && "$GITHUB_SHA" != "$MOCK_EXPECT_SHA" ]]; then
+      echo 'Check would target the wrong commit' >&2
+      exit 1
+    fi
     if [[ "$MOCK_MODE" == upload-failure ]]; then
       echo 'Upload failed' >&2
       exit 1

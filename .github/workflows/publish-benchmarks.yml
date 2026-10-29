@@ -1,0 +1,102 @@
+name: Publish benchmarks
+
+on:
+  workflow_call:
+    inputs:
+      bencher-project:
+        description: Bencher project slug; empty disables publication
+        required: false
+        default: ''
+        type: string
+      bencher-testbed:
+        description: Stable hardware and benchmark configuration identifier
+        required: false
+        default: alice-bob-v1
+        type: string
+      source-workflow-path:
+        description: Only accept completed runs from this product workflow
+        required: false
+        default: .github/workflows/benchmarks.yml
+        type: string
+    secrets:
+      BENCHER_API_KEY:
+        required: false
+
+permissions: {}
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && inputs.bencher-project != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted Benchy
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: Serock3/benchy
+          ref: main
+          path: benchy
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          toolchain: stable
+          cache: false
+      - name: Resolve trusted source run and PR
+        id: context
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_WORKFLOW_PATH: ${{ inputs.source-workflow-path }}
+        run: |
+          mkdir -p bencher-results
+          cargo run --locked --manifest-path benchy/Cargo.toml --package benchy-cli -- \
+            prepare-publication --event "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" \
+            --workflow-path "$SOURCE_WORKFLOW_PATH" --output bencher-results/context.json \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Download source attempt's benchmark artifact
+        if: ${{ steps.context.outputs.publish == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ steps.context.outputs.artifact-id }}
+          run-id: ${{ steps.context.outputs.source-run-id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: raw-results
+          merge-multiple: true
+      - name: Validate and convert results
+        if: ${{ steps.context.outputs.publish == 'true' }}
+        shell: bash
+        run: |
+          cargo run --locked --manifest-path benchy/Cargo.toml --package benchy-cli -- \
+            export-bencher --result-dir raw-results --output bencher-results/metrics.json \
+            --publication-context bencher-results/context.json
+      - name: Install Bencher CLI
+        if: ${{ steps.context.outputs.publish == 'true' }}
+        uses: bencherdev/bencher@413bcf965d6bbda1592f2197bde016db55348746
+      - name: Publish results and report to GitHub
+        if: ${{ steps.context.outputs.publish == 'true' }}
+        shell: bash
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
+          BENCHER_PROJECT: ${{ inputs.bencher-project }}
+          BENCHER_TESTBED: ${{ inputs.bencher-testbed }}
+          BENCHY_SOURCE_SHA: ${{ steps.context.outputs.source-sha }}
+          BENCHY_SOURCE_BRANCH: ${{ steps.context.outputs.source-branch }}
+          BENCHY_PR_NUMBER: ${{ steps.context.outputs.pr-number }}
+          BENCHY_BASE_BRANCH: ${{ steps.context.outputs.base-branch }}
+          BENCHY_BASE_SHA: ${{ steps.context.outputs.base-sha }}
+          BENCHY_GITHUB_TOKEN: ${{ github.token }}
+        run: bash benchy/scripts/publish-bencher.sh bencher-results/metrics.json bencher-results/report.json
+      - name: Upload publishing diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: bencher-results-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bencher-results/
+          if-no-files-found: ignore

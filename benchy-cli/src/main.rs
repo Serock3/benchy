@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
 mod bencher;
+mod github;
 
 #[derive(Parser)]
 #[command(version, about = "Run repository-local system benchmarks")]
@@ -35,6 +36,22 @@ enum Commands {
         /// Write to this file instead of stdout. Keep it outside the input directory.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Validate the results against trusted metadata resolved by prepare-publication.
+        #[arg(long)]
+        publication_context: Option<PathBuf>,
+    },
+    /// Resolve a completed benchmark run and its PR using GitHub's API, not artifact metadata.
+    PreparePublication {
+        #[arg(long)]
+        event: PathBuf,
+        #[arg(long)]
+        repository: String,
+        #[arg(long, default_value = ".github/workflows/benchmarks.yml")]
+        workflow_path: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        github_output: PathBuf,
     },
 }
 
@@ -62,9 +79,22 @@ fn main() -> Result<()> {
             benchmarks,
             result_dir,
         } => run(manifest_path, &benchmarks, result_dir),
-        Commands::ExportBencher { result_dir, output } => {
-            bencher::export(&result_dir, output.as_deref())
-        }
+        Commands::ExportBencher {
+            result_dir,
+            output,
+            publication_context,
+        } => bencher::export(
+            &result_dir,
+            output.as_deref(),
+            publication_context.as_deref(),
+        ),
+        Commands::PreparePublication {
+            event,
+            repository,
+            workflow_path,
+            output,
+            github_output,
+        } => github::prepare(&event, &repository, &workflow_path, &output, &github_output),
     }
 }
 

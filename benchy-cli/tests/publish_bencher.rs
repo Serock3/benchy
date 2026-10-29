@@ -32,6 +32,12 @@ impl Publisher {
                 format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
             )
             .env("BENCHER_API_KEY", "test-key-never-log")
+            .env_remove("BENCHY_GITHUB_TOKEN")
+            .env_remove("BENCHY_PR_NUMBER")
+            .env_remove("BENCHY_SOURCE_SHA")
+            .env_remove("BENCHY_SOURCE_BRANCH")
+            .env_remove("BENCHY_BASE_BRANCH")
+            .env_remove("BENCHY_BASE_SHA")
             .env("BENCHER_PROJECT", "gotatun-test")
             .env("BENCHER_TESTBED", "alice-bob-v1")
             .env("GITHUB_SHA", "9e54a1629126077d2486e26e414c3aadf6a201a2")
@@ -119,4 +125,36 @@ fn failed_upload_does_not_add_a_success_link() {
     assert!(!output.status.success());
     assert!(publisher.read("calls.log").contains("run --project"));
     assert!(publisher.read("summary.md").is_empty());
+}
+
+#[test]
+fn pr_reporting_uses_tested_head_and_base_instead_of_publisher_commit() {
+    let mut publisher = Publisher::new("existing");
+    let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let base = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    publisher
+        .command
+        .env("BENCHY_SOURCE_SHA", sha)
+        .env("BENCHY_SOURCE_BRANCH", "pr/7")
+        .env("BENCHY_PR_NUMBER", "7")
+        .env("BENCHY_BASE_BRANCH", "main")
+        .env("BENCHY_BASE_SHA", base)
+        .env("BENCHY_GITHUB_TOKEN", "github-test-token")
+        .env("MOCK_EXPECT_SHA", sha);
+    let output = publisher.command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let calls = publisher.read("calls.log");
+    assert!(calls.contains(&format!("--branch pr/7 --hash {sha}")));
+    assert!(calls.contains("--github-actions github-test-token"));
+    assert!(calls.contains("--ci-number 7 --start-point main"));
+    assert!(calls.contains(&format!("--start-point-hash {base} --start-point-reset")));
+}
+
+#[test]
+fn pr_reporting_requires_github_credentials_before_publishing() {
+    let mut publisher = Publisher::new("existing");
+    publisher.command.env("BENCHY_PR_NUMBER", "7");
+    let output = publisher.command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(publisher.read("calls.log").is_empty());
 }

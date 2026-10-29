@@ -60,77 +60,103 @@ parameters, environment, labels, and failures. Pass the tested revision and bran
 to Benchy's revision. Parameter changes that affect comparability require a different benchmark
 identity or Bencher testbed.
 
-## Publishing job
+## PR runs and approval
 
-The reusable workflow in `.github/workflows/run-benchmarks.yml` contains two jobs:
+The product's `Benchmarks` workflow runs on pushes to `main`, PRs targeting `main`, and manual
+dispatch with a benchmark selection. It calls `run-benchmarks.yml` with read-only repository
+permissions and no secrets. PRs check out the head repository and exact head SHA. The workflow
+sets `BENCHY_SOURCE_SHA` and `BENCHY_SOURCE_BRANCH=pr/<number>` so the raw results identify that
+commit rather than GitHub's synthetic merge commit. Other runs use the selected commit and branch.
+
+Before enabling this trigger, configure **Settings → Actions → General → Approval for running
+fork pull request workflows from contributors → Require approval for all external contributors**.
+Internal PRs run automatically. External contributors' workflows wait for a maintainer's
+**Approve workflows to run** action on the PR page, including contributors with earlier merged
+PRs. This setting is repository-wide, so it also affects the repository's other workflows.
+
+Approval authorizes running the reviewed code on the benchmark hosts. It does not sandbox build
+scripts or benchmark binaries, or isolate the hosts' existing SSH keys and sudo privileges.
+GitHub withholds repository secrets and write tokens from fork PR runs even after approval.
+
+## Trusted publishing workflow
+
+Each product has a second workflow on its default branch, for example
+`.github/workflows/publish-benchmarks.yml`:
 
 ```yaml
+name: Publish benchmarks
+on:
+  workflow_run:
+    workflows: [Benchmarks]
+    types: [completed]
+permissions: {}
 jobs:
-  benchmark:
-    # Runs benchmarks and uploads the raw result artifact.
-    runs-on: ${{ fromJSON(inputs.runner-labels) }}
-
   publish:
-    needs: benchmark
-    if: ${{ inputs.bencher-project != '' }}
-    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     permissions:
+      actions: read
       contents: read
-    # Converts and publishes results using the product's project key.
-```
-
-`ubuntu-latest` requests a fresh GitHub-hosted machine. `needs: benchmark` waits until Alice's
-job succeeds; failures still retain their raw artifact and summary, without entering the baseline.
-The benchmark job passes its exact artifact ID and Benchy commit to the publisher. The publisher
-downloads that artifact and checks out the matching framework revision, verifies the raw results'
-commit, branch, run ID, and original attempt, then builds the converter. Using the original
-artifact ID and attempt also allows retrying a failed publishing job while retaining the earlier
-successful benchmark job. Product source is not checked out or executed by the publisher.
-
-Each product caller supplies the optional `bencher-project` input and explicitly forwards the
-named `BENCHER_API_KEY` secret:
-
-```yaml
-jobs:
-  benchmark:
-    uses: Serock3/benchy/.github/workflows/run-benchmarks.yml@main
+      checks: write
+      pull-requests: write
+    uses: Serock3/benchy/.github/workflows/publish-benchmarks.yml@main
     with:
-      benchmarks: ${{ inputs.benchmarks || 'default' }}
-      manifest-path: benchmarks/Cargo.toml
       bencher-project: ${{ vars.BENCHER_PROJECT }}
     secrets:
       BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
 ```
 
-Only the publishing step references the key in its environment. An empty project input disables
-publication for repositories still using artifacts. A configured project without a forwarded key
-fails publication with an explicit error. Set the Actions repository variable `BENCHER_PROJECT`
-to `gotatun-test` for the GotaTun pilot; `mullvad-test` is a different project and rejects that key.
-Each product repository can have different values under the same variable and secret names.
+This workflow runs in the base repository's trusted context. It calls the shared publisher on
+`ubuntu-latest`, checks out Benchy from its trusted `main`, and does not check out product code or
+use a framework revision supplied by the benchmark artifact. Only its final publishing step gets
+the Bencher key and GitHub reporting token. The official Bencher setup action is pinned to a
+commit; it installs the latest CLI for Bencher Cloud compatibility.
 
-After downloading and converting the artifact, `scripts/publish-bencher.sh` configures the
-required measures and runs the equivalent of:
+The product sets its own `BENCHER_API_KEY` secret and `BENCHER_PROJECT` variable. Use
+`gotatun-test` for the current GotaTun fork; a key for that project cannot publish to `mullvad-test`.
+An empty project disables publication. A configured project without a key fails explicitly. The
+optional `bencher-testbed` input defaults to `alice-bob-v1` and should change for hardware or
+benchmark configuration changes that affect comparability.
 
-```console
-bencher run --project "$BENCHER_PROJECT" \
-  --branch "$GITHUB_REF_NAME" --hash "$GITHUB_SHA" \
-  --testbed "$BENCHER_TESTBED" --adapter json --file bencher-results/metrics.json
-```
+`benchy-cli prepare-publication` resolves the exact completed source run attempt using GitHub's
+API. It verifies the repository, workflow path/ID, successful conclusion, source SHA, and event,
+then selects the unexpired artifact named `benchmark-results-<source-run-id>-<source-attempt>`.
+PR metadata also comes from GitHub's API. If the run has no associated PR numbers (which can
+happen for forks), the commit association API supplies candidates. The publisher requires one
+open PR whose head SHA, source repository, branch, and base repository match the run. Updated or
+closed PRs are skipped; ambiguous associations fail. An artifact cannot choose the PR, checkout
+ref, Bencher branch, or baseline.
 
-The tested commit and branch are taken from the calling workflow context, checked against the
-raw results before publishing, and passed explicitly so the framework checkout cannot change
-their attribution. Use the optional `bencher-testbed` input (default `alice-bob-v1`) to distinguish
-hardware or configuration changes that affect comparability.
+The command writes `bencher-results/context.json` and step outputs for artifact download. Every
+raw result's commit, branch, source run ID, and source attempt must match this trusted context
+before `export-bencher --publication-context ...` produces metrics. Downloaded content is parsed
+as JSON only. No commands, workflow files, or scripts from the artifact are executed.
 
-The Bencher CLI returns a JSON report, saved as `bencher-results/report.json`, and its URL is
-added to the workflow summary. The converted metrics and report are uploaded as
-`bencher-results-<run-id>-<publishing-attempt>` even when publication fails. Raw results remain in
-their original artifact. Authentication, unit, and service errors fail the publishing job without
-rerunning or discarding the benchmark. The official setup action installs the latest CLI for
-Bencher Cloud compatibility; the action itself is pinned to a commit.
+## Reporting and baseline
 
-Neither GitHub checks/PR comments nor regression thresholds are enabled yet. They can follow
-after an end-to-end Actions pilot; reporting features will require additional job permissions.
+`scripts/publish-bencher.sh` verifies the measures and submits the converted metrics. PR reports
+use Bencher branch `pr/<number>` and the PR head SHA, with the target branch and base SHA as the
+start point. The start point is reset for each run so a rebased PR does not keep using an older
+baseline. Pushes to `main` establish baseline history using the same testbed. Statistical
+regression thresholds are not configured yet; PR checks initially report successful measurement
+and publication, rather than certifying the absence of a performance regression.
+
+The publisher passes `--github-actions` and the explicit `--ci-number` for PR comments. Bencher
+also reads `GITHUB_SHA` to place GitHub checks; the script overrides it for the Bencher subprocess
+with the validated source SHA because a `workflow_run` job's own SHA belongs to the default branch.
+The report's values, check, and PR comment therefore refer to the same tested revision.
+
+The JSON report is saved as `bencher-results/report.json`, and its URL is added to the workflow
+summary. Context, converted metrics, and the report are retained as a diagnostics artifact named
+with both source and publishing run IDs/attempts, even if an upload fails. Raw results remain in
+the original benchmark artifact. A failed publishing workflow can be retried independently.
+
+## Deployment
+
+Set and verify the external-contributor approval policy first. Push the shared Benchy changes,
+then the updated product workflows to the fork's default branch. Both workflows must be present
+on that branch for `workflow_run` to work. Check a main-branch baseline run, an internal PR, and a
+PR opened by an outside contributor to verify the approval button and reporting. Copying the
+external branch into the base repository is not a test of the fork approval gate.
 
 ## References
 

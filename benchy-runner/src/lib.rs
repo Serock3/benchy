@@ -56,12 +56,14 @@ impl MachineLock {
 
 impl Recorder {
     pub async fn new(definition: BenchmarkDefinition, output: impl Into<PathBuf>) -> Self {
-        let commit = env::var("GITHUB_SHA")
+        let commit = env::var("BENCHY_SOURCE_SHA")
             .ok()
+            .or_else(|| env::var("GITHUB_SHA").ok())
             .or_else(|| git_value(["rev-parse", "HEAD"]))
             .unwrap_or_else(|| "unknown".to_owned());
-        let branch = env::var("GITHUB_REF_NAME")
+        let branch = env::var("BENCHY_SOURCE_BRANCH")
             .ok()
+            .or_else(|| env::var("GITHUB_REF_NAME").ok())
             .or_else(|| git_value(["branch", "--show-current"]))
             .unwrap_or_else(|| "unknown".to_owned());
         let commit_message = git_value(["log", "-1", "--pretty=%B"]);

@@ -48,6 +48,12 @@ presentation text and may change without creating a new series.
 is the UTC time at which the benchmark started. `run_id` is optional and identifies the CI workflow
 run when one exists.
 
+For PR runs, `commit` is the PR head SHA and `branch` is `pr/<number>`. The workflow passes
+`BENCHY_SOURCE_SHA` and `BENCHY_SOURCE_BRANCH` to the recorder explicitly, since GitHub's default
+PR SHA refers to a merge commit. These overrides also support checking out a source revision
+different from the workflow's own revision. Run IDs and attempts still identify the benchmark
+workflow, rather than the later publishing workflow.
+
 `status` is either `success` or `failed`. A failed result may include an `error` string and may have
 no measurements. Results from successful and failed runs retain their parameters and environment
 metadata.

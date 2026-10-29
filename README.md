@@ -17,6 +17,8 @@ establishes the tunnel, and measures it with iperf3.
 - `benchy-lib` contains the versioned result artifact types shared by benchmark crates and the
   runner.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
+- `.github/workflows/publish-benchmarks.yml` publishes completed runs from a separate trusted
+  `workflow_run` workflow, including GitHub checks and PR comments.
 
 The per-run JSON files use the versioned result schema documented in
 [`docs/result-schema-v1.md`](docs/result-schema-v1.md). They are uploaded as diagnostic artifacts
@@ -25,9 +27,9 @@ writes result files; there is no persistent results database or web service to d
 
 Bencher Cloud provides metric history and plots. `benchy-cli export-bencher` converts result files
 to Bencher Metric Format (BMF). When a Bencher project is configured, a GitHub-hosted publishing
-job submits successful results and links the report in the workflow summary. Both raw JSON and
-Bencher diagnostics remain available as artifacts. PR comments and regression thresholds are
-future additions.
+workflow submits successful results, creates a GitHub check, and comments on PRs. Both raw JSON
+and Bencher diagnostics remain available as artifacts. Regression thresholds remain a future
+addition.
 
 ## Local layout
 
@@ -66,15 +68,23 @@ values: each key is scoped to its own Bencher project. Store the credentials in 
 that launches the workflow (currently the product forks), not in the shared Benchy repository or
 on Alice. The `export BENCHER_API_KEY=...` command shown by Bencher is for local CLI use.
 
-The caller passes the project slug as `bencher-project` and explicitly forwards the named secret
-to the reusable workflow; see the example in [`docs/bencher.md`](docs/bencher.md). An empty project
+The product's separate publisher passes the project slug as `bencher-project` and explicitly
+forwards the named secret; see the example in [`docs/bencher.md`](docs/bencher.md). An empty project
 slug disables publication. The optional `bencher-testbed` input defaults to `alice-bob-v1`.
 The publisher downloads the benchmark artifact, converts it, verifies the units, and submits it
-using the project key. Only the publishing step receives the key. Both jobs use read-only
-repository permissions; the benchmark job runs on Alice and the publisher runs on GitHub.
+using the project key. Only the publishing step receives the key. The benchmark workflow runs on
+Alice with a read-only repository token and no Bencher secrets. The trusted publisher runs on
+GitHub with permission to read artifacts and write checks/PR comments.
+
+GotaTun runs benchmarks on pushes to `main`, PRs targeting `main`, and manual dispatch. Configure
+**Settings → Actions → General → Require approval for all external contributors** before enabling
+the PR trigger. Internal PRs run automatically; external PRs wait for a maintainer to approve
+workflows from the PR page. Approval authorizes executing that revision on Alice/Bob; it does not
+sandbox the code or change host-level SSH/sudo access.
 
 Roll out with a manual GotaTun run, verify units and source metadata against the raw JSON, then
-add baseline history and PR reporting. Repeat for mullvadvpn-app after the pilot. Legacy app-bench
+verify a PR check/comment and the external approval gate. Repeat for mullvadvpn-app after the
+pilot. Legacy app-bench
 JSON can be evaluated for a one-time import; results from the experimental SQLite store do not
 need migration. Keep raw artifacts for debugging and retrying publication; GitHub artifact
 retention is finite, so they are not a permanent archive.

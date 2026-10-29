@@ -10,6 +10,22 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?Missing tested branch}"
 : "${GITHUB_STEP_SUMMARY:?Missing workflow summary path}"
 
+# workflow_run's GITHUB_SHA is the default branch, not the tested commit. Bencher
+# uses this environment variable for the Check's SHA as well as the explicit --hash.
+export GITHUB_SHA=${BENCHY_SOURCE_SHA:-$GITHUB_SHA}
+tested_branch=${BENCHY_SOURCE_BRANCH:-$GITHUB_REF_NAME}
+report_args=()
+if [[ -n "${BENCHY_GITHUB_TOKEN:-}" ]]; then
+  report_args+=(--github-actions "$BENCHY_GITHUB_TOKEN")
+fi
+if [[ -n "${BENCHY_PR_NUMBER:-}" ]]; then
+  : "${BENCHY_GITHUB_TOKEN:?Missing GitHub reporting token}"
+  : "${BENCHY_BASE_BRANCH:?Missing PR base branch}"
+  : "${BENCHY_BASE_SHA:?Missing PR base commit}"
+  report_args+=(--ci-number "$BENCHY_PR_NUMBER" --start-point "$BENCHY_BASE_BRANCH"
+    --start-point-hash "$BENCHY_BASE_SHA" --start-point-reset)
+fi
+
 metrics_file=${1:?Expected metrics JSON path}
 report_file=${2:?Expected report JSON path}
 
@@ -38,9 +54,9 @@ count count
 MEASURES
 
 bencher run --project "$BENCHER_PROJECT" \
-  --branch "$GITHUB_REF_NAME" --hash "$GITHUB_SHA" \
+  --branch "$tested_branch" --hash "$GITHUB_SHA" \
   --testbed "$BENCHER_TESTBED" --adapter json --file "$metrics_file" \
-  --format json --quiet --attempts 3 > "$report_file"
+  --format json --quiet --attempts 3 "${report_args[@]}" > "$report_file"
 
 report_id=$(jq -er '.uuid' "$report_file")
 project_slug=$(jq -er '.project.slug' "$report_file")

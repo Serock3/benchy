@@ -18,7 +18,11 @@ struct Metric {
     value: f64,
 }
 
-pub fn export(result_dir: &Path, output: Option<&Path>) -> Result<()> {
+pub fn export(
+    result_dir: &Path,
+    output: Option<&Path>,
+    publication_context: Option<&Path>,
+) -> Result<()> {
     let result_dir = result_dir
         .canonicalize()
         .with_context(|| format!("failed to resolve {}", result_dir.display()))?;
@@ -52,6 +56,11 @@ pub fn export(result_dir: &Path, output: Option<&Path>) -> Result<()> {
                 .with_context(|| format!("invalid benchmark result {}", path.display()))
         })
         .collect::<Result<Vec<_>>>()?;
+    if let Some(path) = publication_context {
+        let context: crate::github::Publication = serde_json::from_slice(&fs::read(path)?)
+            .context("invalid trusted publication context")?;
+        context.verify(&benchmarks)?;
+    }
     let metrics = convert(&benchmarks)?;
     // Finish validation and serialization before opening the output, so bad input cannot
     // truncate an existing export. Diagnostics stay off stdout, which is valid BMF JSON.

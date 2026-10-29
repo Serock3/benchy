@@ -77,3 +77,37 @@ fn invalid_inputs_do_not_overwrite_outputs_or_source_documents() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("outside the result directory"));
     assert_eq!(fs::read_to_string(input).unwrap(), fixture);
 }
+
+#[test]
+fn publication_context_is_checked_before_writing_an_export() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let temp = tempfile::tempdir().unwrap();
+    let context_path = temp.path().join("context.json");
+    let output_path = temp.path().join("metrics.json");
+    let mut context = json!({
+        "repository": "owner/gotatun", "run_id": 123456, "run_attempt": 1,
+        "artifact_id": 99, "sha": "abc123", "branch": "main", "pull_request": null
+    });
+    fs::write(&context_path, serde_json::to_vec(&context).unwrap()).unwrap();
+    let output = exporter(&fixtures)
+        .arg("--publication-context")
+        .arg(&context_path)
+        .arg("--output")
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let previous = fs::read(&output_path).unwrap();
+    context["sha"] = json!("unrelated-commit");
+    fs::write(&context_path, serde_json::to_vec(&context).unwrap()).unwrap();
+    let output = exporter(&fixtures)
+        .arg("--publication-context")
+        .arg(&context_path)
+        .arg("--output")
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not match"));
+    assert_eq!(fs::read(output_path).unwrap(), previous);
+}
