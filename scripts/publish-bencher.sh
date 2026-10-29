@@ -53,9 +53,21 @@ seconds s
 count count
 MEASURES
 
+# Percentage-based regression thresholds, created for each run's branch and testbed.
+# Throughput alerts on drops and CPU usage on increases; the observed run-to-run noise
+# is roughly 3% for throughput and up to ~11% for the smallest CPU metric, so these
+# boundaries leave a comfortable margin. History is sparse while the project is young,
+# so the minimum sample size is 1; revisit both once a real history accumulates.
 bencher run --project "$BENCHER_PROJECT" \
   --branch "$tested_branch" --hash "$GITHUB_SHA" \
   --testbed "$BENCHER_TESTBED" --adapter json --file "$metrics_file" \
+  --threshold-measure gigabits-per-second --threshold-test percentage \
+  --threshold-min-sample-size 1 --threshold-max-sample-size 64 \
+  --threshold-lower-boundary 0.10 --threshold-upper-boundary _ \
+  --threshold-measure percent --threshold-test percentage \
+  --threshold-min-sample-size 1 --threshold-max-sample-size 64 \
+  --threshold-lower-boundary _ --threshold-upper-boundary 0.25 \
+  --thresholds-reset \
   --format json --quiet --attempts 3 "${report_args[@]}" > "$report_file"
 
 report_id=$(jq -er '.uuid' "$report_file")

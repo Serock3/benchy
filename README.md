@@ -28,8 +28,8 @@ writes result files; there is no persistent results database or web service to d
 Bencher Cloud provides metric history and plots. `benchy-cli export-bencher` converts result files
 to Bencher Metric Format (BMF). When a Bencher project is configured, a GitHub-hosted publishing
 workflow submits successful results, creates a GitHub check, and comments on PRs. Both raw JSON
-and Bencher diagnostics remain available as artifacts. Regression thresholds remain a future
-addition.
+and Bencher diagnostics remain available as artifacts. Percentage-based regression thresholds
+alert on throughput drops or CPU-usage increases without failing the publishing workflow.
 
 ## Local layout
 

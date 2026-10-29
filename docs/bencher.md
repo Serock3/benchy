@@ -136,9 +136,16 @@ as JSON only. No commands, workflow files, or scripts from the artifact are exec
 `scripts/publish-bencher.sh` verifies the measures and submits the converted metrics. PR reports
 use Bencher branch `pr/<number>` and the PR head SHA, with the target branch and base SHA as the
 start point. The start point is reset for each run so a rebased PR does not keep using an older
-baseline. Pushes to `main` establish baseline history using the same testbed. Statistical
-regression thresholds are not configured yet; PR checks initially report successful measurement
-and publication, rather than certifying the absence of a performance regression.
+baseline. Pushes to `main` establish baseline history using the same testbed.
+
+The publishing script declares percentage-based thresholds for both measures: throughput alerts
+when it drops more than 10% below the historical mean, and CPU usage alerts when it rises more
+than 25% above it. Calibrated against the observed run-to-run spread (about 3% for throughput
+and up to 11% for the smallest CPU metric), they are intended to catch real regressions without
+firing on noise. `bencher run` creates these thresholds for each run's branch and testbed, with a
+minimum sample size of one while history is sparse. Alerts currently appear in the check and PR
+comment; the publishing workflow is not failed on alert, so a red check still requires human
+judgement rather than certifying the absence of a performance regression.
 
 The publisher passes `--github-actions` and the explicit `--ci-number` for PR comments. Bencher
 also reads `GITHUB_SHA` to place GitHub checks; the script overrides it for the Bencher subprocess
