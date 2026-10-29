@@ -53,6 +53,12 @@ cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- run \
   --benchmarks default
 ```
 
+Add `--iterations 10 --result-dir benchmark-results/stability` to repeat complete runs.
+Use an empty result directory. Every raw sample is retained; Bencher receives the mean with
+±1 sample-standard-deviation bounds for each measure when there are at least two samples.
+The reusable workflow accepts the same `iterations` input. See
+[repeated runs](docs/bencher.md#repeated-complete-runs) for details.
+
 ## Bencher Cloud setup and rollout
 
 Create a public Bencher project for each product repository. In **each product repository** on

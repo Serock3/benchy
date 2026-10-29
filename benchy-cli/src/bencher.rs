@@ -28,6 +28,10 @@ struct Export {
 #[derive(Debug, Serialize, PartialEq)]
 struct Metric {
     value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lower_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upper_value: Option<f64>,
 }
 
 pub fn export(
@@ -46,7 +50,7 @@ pub fn export(
         let output_parent = output_parent.unwrap_or_else(|| Path::new("."));
         let parent = output_parent.canonicalize()?;
         ensure!(
-            parent != result_dir,
+            !parent.starts_with(&result_dir),
             "--output must be outside the result directory"
         );
         let destination = parent.join(output.file_name().context("output must name a file")?);
@@ -57,32 +61,23 @@ pub fn export(
         destinations.push(destination);
     }
 
-    let mut paths = fs::read_dir(&result_dir)
-        .with_context(|| format!("failed to read {}", result_dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<io::Result<Vec<_>>>()?;
-    paths.retain(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "json")
-    });
-    paths.sort();
-    ensure!(!paths.is_empty(), "no JSON result files found");
-
-    let benchmarks = paths
-        .iter()
-        .map(|path| {
-            let bytes =
-                fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-            serde_json::from_slice::<Benchmark>(&bytes)
-                .with_context(|| format!("invalid benchmark result {}", path.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let samples = read_samples(&result_dir)?;
+    let benchmarks: Vec<_> = samples.iter().flatten().cloned().collect();
+    let first = benchmarks
+        .first()
+        .context("no benchmark results provided")?;
+    ensure!(
+        benchmarks
+            .iter()
+            .all(|benchmark| same_run(first, benchmark)),
+        "result files must belong to the same repository, commit, branch, and workflow attempt"
+    );
     if let Some(path) = publication_context {
         let context: crate::github::Publication = serde_json::from_slice(&fs::read(path)?)
             .context("invalid trusted publication context")?;
         context.verify(&benchmarks)?;
     }
-    let export = convert(&benchmarks)?;
+    let export = aggregate_samples(&samples)?;
     // Finish validation and serialization before opening the output, so bad input cannot
     // truncate an existing export. Diagnostics stay off stdout, which is valid BMF JSON.
     let mut json = serde_json::to_vec_pretty(&export.metrics)?;
@@ -102,6 +97,184 @@ pub fn export(
             .write_all(&json)
             .context("failed to write Bencher metrics to stdout"),
     }
+}
+
+fn json_paths(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut paths = fs::read_dir(directory)
+        .with_context(|| format!("failed to read {}", directory.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    paths.retain(|path| {
+        path.extension().is_some_and(|ext| ext == "json")
+            && path
+                .file_name()
+                .is_some_and(|name| name != crate::SAMPLE_MANIFEST)
+    });
+    paths.sort();
+    Ok(paths)
+}
+
+fn read_samples(directory: &Path) -> Result<Vec<Vec<Benchmark>>> {
+    let manifest_path = directory.join(crate::SAMPLE_MANIFEST);
+    let manifest = if manifest_path.exists() {
+        let manifest: crate::SampleManifest =
+            serde_json::from_slice(&fs::read(manifest_path)?).context("invalid sample manifest")?;
+        manifest.validate()?;
+        Some(manifest)
+    } else {
+        None
+    };
+    let iterations = manifest.as_ref().map_or(1, |manifest| manifest.iterations);
+    let expected_directories: std::collections::BTreeSet<_> = if iterations > 1 {
+        (1..=iterations)
+            .map(|index| format!("sample-{index:03}"))
+            .collect()
+    } else {
+        Default::default()
+    };
+    let actual_directories = fs::read_dir(directory)?
+        .map(|entry| {
+            let entry = entry?;
+            Ok((
+                entry.file_name().to_string_lossy().into_owned(),
+                entry.file_type()?.is_dir(),
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(name, is_dir)| *is_dir && name.starts_with("sample-"))
+        .map(|(name, _)| name)
+        .collect();
+    ensure!(
+        expected_directories == actual_directories,
+        "sample directories do not match the declared iteration count"
+    );
+    if iterations > 1 {
+        ensure!(
+            json_paths(directory)?.is_empty(),
+            "cannot mix flat results and repeated samples"
+        );
+    }
+    let mut samples = Vec::new();
+    for index in 1..=iterations {
+        let path = manifest.as_ref().map_or_else(
+            || directory.to_owned(),
+            |manifest| manifest.directory(directory, index),
+        );
+        let paths = json_paths(&path)?;
+        ensure!(
+            !paths.is_empty(),
+            "no JSON result files found in {}",
+            path.display()
+        );
+        let benchmarks = paths
+            .iter()
+            .map(|path| {
+                let bytes = fs::read(path)?;
+                serde_json::from_slice::<Benchmark>(&bytes)
+                    .with_context(|| format!("invalid benchmark result {}", path.display()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(manifest) = &manifest {
+            let names = benchmarks
+                .iter()
+                .map(|benchmark| benchmark.group.name.clone())
+                .collect();
+            ensure!(
+                manifest.benchmarks == names,
+                "sample {index} is missing or has unexpected benchmarks"
+            );
+            for benchmark in &benchmarks {
+                ensure!(
+                    benchmark.environment.get("BENCHY_SAMPLE_INDEX") == Some(&index.to_string())
+                        && benchmark.environment.get("BENCHY_SAMPLE_COUNT")
+                            == Some(&iterations.to_string()),
+                    "sample index/count does not match its manifest"
+                );
+            }
+        }
+        samples.push(benchmarks);
+    }
+    Ok(samples)
+}
+
+fn same_run(first: &Benchmark, benchmark: &Benchmark) -> bool {
+    benchmark.group.repository == first.group.repository
+        && benchmark.commit == first.commit
+        && benchmark.branch == first.branch
+        && benchmark.run_id == first.run_id
+        && benchmark.environment.get("GITHUB_RUN_ATTEMPT")
+            == first.environment.get("GITHUB_RUN_ATTEMPT")
+}
+
+fn aggregate_samples(samples: &[Vec<Benchmark>]) -> Result<Export> {
+    let mut exports = samples
+        .iter()
+        .map(|sample| convert(sample))
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(!exports.is_empty(), "no benchmark samples provided");
+    let mut export = exports.remove(0);
+    for (sample, converted) in samples.iter().skip(1).zip(&exports) {
+        ensure!(
+            converted.measures == export.measures
+                && converted.metrics.keys().eq(export.metrics.keys()),
+            "samples have different benchmarks or measure definitions"
+        );
+        for benchmark in sample {
+            let first = samples[0]
+                .iter()
+                .find(|first| first.group == benchmark.group)
+                .context("samples have different benchmarks")?;
+            ensure!(
+                same_run(first, benchmark) && first.parameters == benchmark.parameters,
+                "samples have different source identities or benchmark parameters"
+            );
+            ensure!(
+                converted.metrics[&benchmark.group.name]
+                    .keys()
+                    .eq(export.metrics[&benchmark.group.name].keys()),
+                "samples have different measurement sets"
+            );
+        }
+    }
+    if samples.len() > 1 {
+        for (name, measures) in &mut export.metrics {
+            for (slug, metric) in measures {
+                let values = std::iter::once(metric.value).chain(
+                    exports
+                        .iter()
+                        .map(|sample| sample.metrics[name][slug].value),
+                );
+                *metric = summarize(values)?;
+            }
+        }
+    }
+    Ok(export)
+}
+
+fn summarize(values: impl Iterator<Item = f64>) -> Result<Metric> {
+    let (mut count, mut mean, mut squared_deviations) = (0_u32, 0.0, 0.0);
+    for value in values {
+        count += 1;
+        let delta = value - mean;
+        mean += delta / f64::from(count);
+        squared_deviations += delta * (value - mean);
+    }
+    ensure!(
+        count >= 2,
+        "standard deviation requires at least two samples"
+    );
+    let deviation = (squared_deviations / f64::from(count - 1)).sqrt();
+    let (lower, upper) = (mean - deviation, mean + deviation);
+    ensure!(
+        mean.is_finite() && lower.is_finite() && upper.is_finite(),
+        "non-finite sample statistics"
+    );
+    Ok(Metric {
+        value: mean,
+        lower_value: Some(lower),
+        upper_value: Some(upper),
+    })
 }
 
 fn convert(benchmarks: &[Benchmark]) -> Result<Export> {
@@ -127,12 +300,7 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Export> {
             "repository, benchmark name, commit, and branch must be nonempty"
         );
         ensure!(
-            group.repository == first.group.repository
-                && benchmark.commit == first.commit
-                && benchmark.branch == first.branch
-                && benchmark.run_id == first.run_id
-                && benchmark.environment.get("GITHUB_RUN_ATTEMPT")
-                    == first.environment.get("GITHUB_RUN_ATTEMPT"),
+            same_run(first, benchmark),
             "result files must belong to the same repository, commit, branch, and workflow attempt"
         );
         ensure!(
@@ -170,7 +338,14 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Export> {
                     "conflicting names or units for Bencher measure {slug}"
                 );
             }
-            values.insert(slug, Metric { value });
+            values.insert(
+                slug,
+                Metric {
+                    value,
+                    lower_value: None,
+                    upper_value: None,
+                },
+            );
         }
         ensure!(
             metrics.insert(name.clone(), values).is_none(),
@@ -215,6 +390,62 @@ mod tests {
 
     fn fixture() -> Benchmark {
         serde_json::from_str(include_str!("../tests/fixtures/gotatun.json")).unwrap()
+    }
+
+    #[test]
+    fn repeated_runs_use_mean_and_sample_standard_deviation_in_display_units() {
+        let samples: Vec<_> = [1.0, 2.0, 3.0]
+            .into_iter()
+            .map(|value| {
+                let mut benchmark = fixture();
+                benchmark
+                    .measurements
+                    .get_mut("throughput.receiver")
+                    .unwrap()
+                    .value = value * 1_000_000_000.0;
+                benchmark
+                    .measurements
+                    .get_mut("cpu.gotatun.up")
+                    .unwrap()
+                    .value = value * 100.0;
+                vec![benchmark]
+            })
+            .collect();
+        let export = aggregate_samples(&samples).unwrap();
+        assert_eq!(
+            serde_json::to_value(export.metrics).unwrap(),
+            json!({"gotatun-throughput": {
+                "throughput-receiver": {"value": 2.0, "lower_value": 1.0, "upper_value": 3.0},
+                "cpu-gotatun-up": {"value": 200.0, "lower_value": 100.0, "upper_value": 300.0}
+            }})
+        );
+        let single = aggregate_samples(&samples[..1]).unwrap();
+        assert_eq!(single, convert(&samples[0]).unwrap());
+        let constant = summarize([4.0, 4.0].into_iter()).unwrap();
+        assert_eq!(constant.lower_value, Some(4.0));
+        assert_eq!(constant.upper_value, Some(4.0));
+        let pair = summarize([1.0, 3.0].into_iter()).unwrap();
+        assert!((pair.upper_value.unwrap() - (2.0 + 2.0_f64.sqrt())).abs() < 1e-12);
+    }
+
+    #[test]
+    fn repeated_runs_reject_incomparable_or_failed_samples() {
+        let first = fixture();
+        let mut changed = first.clone();
+        changed
+            .parameters
+            .insert("duration_seconds".into(), "60".into());
+        assert!(aggregate_samples(&[vec![first.clone()], vec![changed]]).is_err());
+        let mut changed = first.clone();
+        changed.measurements.remove("cpu.gotatun.up");
+        assert!(aggregate_samples(&[vec![first.clone()], vec![changed]]).is_err());
+        let mut changed = first.clone();
+        changed.commit = "different".into();
+        assert!(aggregate_samples(&[vec![first.clone()], vec![changed]]).is_err());
+        let mut changed = first.clone();
+        changed.status = BenchmarkStatus::Failed;
+        assert!(aggregate_samples(&[vec![first], vec![changed]]).is_err());
+        assert!(summarize([f64::MAX, -f64::MAX].into_iter()).is_err());
     }
 
     #[test]

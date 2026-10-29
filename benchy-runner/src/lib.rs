@@ -74,6 +74,8 @@ impl Recorder {
         copy_env(&mut environment, "GITHUB_RUN_ATTEMPT");
         copy_env(&mut environment, "GITHUB_RUN_ID");
         copy_env(&mut environment, "GITHUB_RUN_NUMBER");
+        copy_env(&mut environment, "BENCHY_SAMPLE_INDEX");
+        copy_env(&mut environment, "BENCHY_SAMPLE_COUNT");
         copy_env(&mut environment, "RUNNER_NAME");
         copy_env(&mut environment, "RUNNER_OS");
 

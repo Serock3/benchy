@@ -85,6 +85,22 @@ and chart selection use the measurement ID.
 contains an allowlisted set of execution metadata. Both maps use string values in v1. Secrets must
 never be recorded in either map.
 
+For harness repetitions, the environment also records `BENCHY_SAMPLE_INDEX` (one-based) and
+`BENCHY_SAMPLE_COUNT`. Each invocation still writes its own schema-v1 document; the raw values
+are not aggregates. The surrounding `_samples.json` batch manifest has its own version field:
+
+```json
+{
+  "schema_version": 1,
+  "iterations": 3,
+  "benchmarks": ["gotatun-throughput"]
+}
+```
+
+Multiple samples live in `sample-001/`, `sample-002/`, etc. Single-sample batches keep raw files
+at the top level. The Bencher exporter validates completeness before computing a mean and
+sample-standard-deviation bounds; see [Bencher export](bencher.md#repeated-complete-runs).
+
 ## Compatibility
 
 `schema_version` is required. Readers must reject unsupported versions instead of attempting a

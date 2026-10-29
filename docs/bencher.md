@@ -14,7 +14,7 @@ cargo run --locked --package benchy-cli -- export-bencher \
 Omit `--output` to print BMF JSON to stdout. `--measures-output` writes the custom measure
 definitions needed by the publisher; it can be omitted for a standalone BMF export. Keep both
 outputs outside the input directory and use different files. The
-converter reads the directory's top-level `.json` files in sorted order and requires schema v1.
+converter reads raw `.json` files in sorted order and requires schema v1.
 It rejects failed results, empty inputs or measurement sets, non-finite values, duplicate metric
 identities, and files from different repositories, revisions, branches, or workflow attempts.
 Validation errors do not produce a partial export or truncate an existing output file.
@@ -55,8 +55,8 @@ The corresponding measure definitions are:
 ```
 
 The complete GotaTun benchmark has six measures: sender and receiver throughput, UP and DOWN
-GotaTun CPU, and UP and DOWN iperf CPU. They belong to one benchmark; none are averaged or
-discarded. These custom measures keep the units explicit. Bencher's built-in `throughput` is
+GotaTun CPU, and UP and DOWN iperf CPU. They belong to one benchmark; none are discarded.
+These custom measures keep the units explicit. Bencher's built-in `throughput` is
 operations/s and `latency` is nanoseconds, so neither is used for our measurements.
 
 | Benchy unit | Measure name suffix | Bencher measure units |
@@ -91,6 +91,34 @@ parameters, environment, labels, and failures. Pass the tested revision and bran
 `bencher run`; checking out Benchy to build the converter must not cause results to be attributed
 to Benchy's revision. Parameter changes that affect comparability require a different benchmark
 identity or Bencher testbed.
+
+## Repeated complete runs
+
+To measure run-to-run variation, pass `--iterations 10` to `benchy-cli run`, or set the
+reusable workflow's `iterations` number input. The default is 1; the allowed range is 1–100.
+Each sample starts a fresh benchmark process, including its normal endpoint setup, complete
+transfer, and cleanup. Compiled code is reused. With multiple benchmarks, each round runs all
+selected benchmarks sequentially before the next round. The result directory must be empty.
+A failed benchmark stops further rounds and the partial batch cannot be published.
+
+The directory contains `_samples.json`, declaring the iteration count and selected benchmark IDs.
+For more than one iteration, raw results are stored in `sample-001/`, `sample-002/`, etc.
+Each raw document remains schema v1 and records `BENCHY_SAMPLE_INDEX` and `BENCHY_SAMPLE_COUNT`
+in its environment. With one iteration, raw files remain at the top level. Legacy single-run
+artifacts without a manifest can still be exported. All raw samples appear in the workflow
+summary and artifact.
+
+The exporter requires every declared sample and benchmark, identical parameters and measure sets,
+and the same tested revision and workflow attempt. For each measure it publishes the arithmetic
+mean as `value`, with `lower_value = mean - sample standard deviation` and
+`upper_value = mean + sample standard deviation`. Sample standard deviation uses the N−1
+denominator. Unit conversion applies to both the mean and spread. A single run has no bounds.
+
+These bounds describe variation across complete runs, including CPU measurements. They are
+neither confidence intervals nor variation between iperf's one-second intervals. Individual
+samples and their count remain available in the raw artifact; the Bencher report contains one
+aggregate point per measure. Regression thresholds continue to compare central values and do
+not automatically become significance tests because bounds are present.
 
 ## PR runs and approval
 

@@ -18,6 +18,11 @@ on:
         required: false
         default: main
         type: string
+      iterations:
+        description: Complete runs per benchmark, from 1 to 100
+        required: false
+        default: 1
+        type: number
       runner-labels:
         description: JSON array of labels identifying the benchmark controller
         required: false
@@ -67,17 +72,23 @@ jobs:
           BENCHY_BOB_ADDRESS: ${{ vars.BENCHY_BOB_ADDRESS }}
           BENCHY_MANIFEST: ${{ inputs.manifest-path }}
           BENCHY_SELECTION: ${{ inputs.benchmarks }}
+          BENCHY_ITERATIONS: ${{ inputs.iterations }}
         run: >-
           ../benchy/target/release/benchy-cli run
           --manifest-path "$BENCHY_MANIFEST"
           --benchmarks "$BENCHY_SELECTION"
           --result-dir "../$BENCHY_RESULT_DIR"
+          --iterations "$BENCHY_ITERATIONS"
       - name: Show raw benchmark results
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          shopt -s nullglob
-          results=("$BENCHY_RESULT_DIR"/*.json)
+          results=()
+          if [[ -d "$BENCHY_RESULT_DIR" ]]; then
+            while IFS= read -r -d '' result; do
+              results+=("$result")
+            done < <(find "$BENCHY_RESULT_DIR" -maxdepth 2 -type f -name '*.json' -print0 | sort -z)
+          fi
           {
             echo '## Raw benchmark results'
             if (( ${#results[@]} == 0 )); then
@@ -86,7 +97,7 @@ jobs:
             else
               for result in "${results[@]}"; do
                 echo
-                printf '### `%s`\n\n' "$(basename "$result")"
+                printf '### `%s`\n\n' "${result#"$BENCHY_RESULT_DIR"/}"
                 echo '```json'
                 cat "$result"
                 echo

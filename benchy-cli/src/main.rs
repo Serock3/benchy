@@ -1,9 +1,9 @@
 use std::{collections::BTreeSet, path::PathBuf, process::Command};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use cargo_metadata::{MetadataCommand, Package};
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 mod bencher;
 mod github;
@@ -28,6 +28,9 @@ enum Commands {
         benchmarks: String,
         #[arg(long, default_value = "benchmark-results")]
         result_dir: PathBuf,
+        /// Number of complete runs per benchmark; bounds in Bencher use sample standard deviation.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=100))]
+        iterations: u16,
     },
     /// Convert a successful workflow attempt's result files to Bencher Metric Format.
     ExportBencher {
@@ -65,6 +68,43 @@ struct BenchyMetadata {
     default: bool,
 }
 
+const SAMPLE_MANIFEST: &str = "_samples.json";
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SampleManifest {
+    schema_version: u32,
+    iterations: u16,
+    benchmarks: BTreeSet<String>,
+}
+
+impl SampleManifest {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == 1,
+            "unsupported sample manifest version"
+        );
+        ensure!(
+            (1..=100).contains(&self.iterations),
+            "iterations must be between 1 and 100"
+        );
+        ensure!(
+            !self.benchmarks.is_empty()
+                && self.benchmarks.iter().all(|name| !name.trim().is_empty()),
+            "sample manifest has no benchmark IDs"
+        );
+        Ok(())
+    }
+
+    fn directory(&self, root: &std::path::Path, index: u16) -> PathBuf {
+        if self.iterations == 1 {
+            root.to_owned()
+        } else {
+            root.join(format!("sample-{index:03}"))
+        }
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Commands::List { manifest_path } => {
@@ -81,7 +121,8 @@ fn main() -> Result<()> {
             manifest_path,
             benchmarks,
             result_dir,
-        } => run(manifest_path, &benchmarks, result_dir),
+            iterations,
+        } => run(manifest_path, &benchmarks, result_dir, iterations),
         Commands::ExportBencher {
             result_dir,
             output,
@@ -103,7 +144,12 @@ fn main() -> Result<()> {
     }
 }
 
-fn run(manifest_path: PathBuf, selection: &str, result_dir: PathBuf) -> Result<()> {
+fn run(
+    manifest_path: PathBuf,
+    selection: &str,
+    result_dir: PathBuf,
+    iterations: u16,
+) -> Result<()> {
     let packages = benchmark_packages(&manifest_path)?;
     let requested = parse_selection(selection);
     let run_all = requested.contains("all");
@@ -114,7 +160,11 @@ fn run(manifest_path: PathBuf, selection: &str, result_dir: PathBuf) -> Result<(
     for (package, metadata) in packages {
         if run_all || (run_default && metadata.default) || requested.contains(metadata.id.as_str())
         {
-            found.insert(metadata.id.clone());
+            ensure!(
+                found.insert(metadata.id.clone()),
+                "duplicate benchmark ID: {}",
+                metadata.id
+            );
             selected.push((package, metadata));
         }
     }
@@ -134,35 +184,62 @@ fn run(manifest_path: PathBuf, selection: &str, result_dir: PathBuf) -> Result<(
         .with_context(|| format!("failed to create {}", result_dir.display()))?;
     let result_dir = result_dir.canonicalize()?;
 
+    ensure!(
+        std::fs::read_dir(&result_dir)?.next().is_none(),
+        "--result-dir must be empty to avoid mixing old samples"
+    );
+    let manifest = SampleManifest {
+        schema_version: 1,
+        iterations,
+        benchmarks: found,
+    };
+    manifest.validate()?;
+    std::fs::write(
+        result_dir.join(SAMPLE_MANIFEST),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+
     let mut failed = BTreeSet::new();
-    for (package, metadata) in selected {
-        println!("::group::benchmark {}", metadata.id);
-        let status = Command::new("cargo")
-            .args([
-                "run",
-                "--release",
-                "--locked",
-                "--config",
-                r#"target."cfg(unix)".runner="/usr/bin/env""#,
-                "--manifest-path",
-            ])
-            .arg(&manifest_path)
-            .args(["--package", &package.name, "--"])
-            .env("BENCHY_RESULT_DIR", &result_dir)
-            .status()
-            .with_context(|| format!("failed to launch benchmark {}", metadata.id))?;
-        println!("::endgroup::");
-        let result_path = result_dir.join(format!("{}.json", metadata.id));
-        if status.success() && !result_path.is_file() {
-            eprintln!(
-                "benchmark {} succeeded without writing {}",
-                metadata.id,
-                result_path.display()
+    for iteration in 1..=iterations {
+        let sample_dir = manifest.directory(&result_dir, iteration);
+        std::fs::create_dir_all(&sample_dir)?;
+        for (package, metadata) in &selected {
+            println!(
+                "::group::benchmark {} (sample {iteration}/{iterations})",
+                metadata.id
             );
-            failed.insert(metadata.id.clone());
+            let status = Command::new("cargo")
+                .args([
+                    "run",
+                    "--release",
+                    "--locked",
+                    "--config",
+                    r#"target."cfg(unix)".runner="/usr/bin/env""#,
+                    "--manifest-path",
+                ])
+                .arg(&manifest_path)
+                .args(["--package", &package.name, "--"])
+                .env("BENCHY_RESULT_DIR", &sample_dir)
+                .env("BENCHY_SAMPLE_INDEX", iteration.to_string())
+                .env("BENCHY_SAMPLE_COUNT", iterations.to_string())
+                .status()
+                .with_context(|| format!("failed to launch benchmark {}", metadata.id))?;
+            println!("::endgroup::");
+            let result_path = sample_dir.join(format!("{}.json", metadata.id));
+            if status.success() && !result_path.is_file() {
+                eprintln!(
+                    "benchmark {} succeeded without writing {}",
+                    metadata.id,
+                    result_path.display()
+                );
+                failed.insert(format!("{} sample {iteration}", metadata.id));
+            }
+            if !status.success() {
+                failed.insert(format!("{} sample {iteration}", metadata.id));
+            }
         }
-        if !status.success() {
-            failed.insert(metadata.id);
+        if !failed.is_empty() {
+            break;
         }
     }
 
