@@ -240,11 +240,8 @@ fn aggregate_samples(samples: &[Vec<Benchmark>]) -> Result<Export> {
     if samples.len() > 1 {
         for (name, measures) in &mut export.metrics {
             for (slug, metric) in measures {
-                let values = std::iter::once(metric.value).chain(
-                    exports
-                        .iter()
-                        .map(|sample| sample.metrics[name][slug].value),
-                );
+                let values = std::iter::once(&*metric)
+                    .chain(exports.iter().map(|sample| &sample.metrics[name][slug]));
                 *metric = summarize(values)?;
             }
         }
@@ -252,28 +249,30 @@ fn aggregate_samples(samples: &[Vec<Benchmark>]) -> Result<Export> {
     Ok(export)
 }
 
-fn summarize(values: impl Iterator<Item = f64>) -> Result<Metric> {
-    let (mut count, mut mean, mut squared_deviations) = (0_u32, 0.0, 0.0);
-    for value in values {
+fn summarize<'a>(values: impl Iterator<Item = &'a Metric>) -> Result<Metric> {
+    let (mut count, mut mean, mut error_norm) = (0_u32, 0.0, Some(0.0_f64));
+    for metric in values {
         count += 1;
-        let delta = value - mean;
+        let delta = metric.value - mean;
         mean += delta / f64::from(count);
-        squared_deviations += delta * (value - mean);
+        error_norm = error_norm
+            .zip(metric.upper_value)
+            .map(|(norm, upper)| norm.hypot(upper - metric.value));
     }
+    ensure!(count >= 2, "aggregation requires at least two samples");
+    // Independent estimates of equal-weight run means: SE(mean) = sqrt(sum(SE_i^2))/N.
+    // Missing uncertainty in any run leaves the aggregate without bounds, including CPU.
+    let error = error_norm.map(|norm| norm / f64::from(count));
+    let lower = error.map(|error| mean - error);
+    let upper = error.map(|error| mean + error);
     ensure!(
-        count >= 2,
-        "standard deviation requires at least two samples"
-    );
-    let deviation = (squared_deviations / f64::from(count - 1)).sqrt();
-    let (lower, upper) = (mean - deviation, mean + deviation);
-    ensure!(
-        mean.is_finite() && lower.is_finite() && upper.is_finite(),
+        mean.is_finite() && lower.is_none_or(f64::is_finite) && upper.is_none_or(f64::is_finite),
         "non-finite sample statistics"
     );
     Ok(Metric {
         value: mean,
-        lower_value: Some(lower),
-        upper_value: Some(upper),
+        lower_value: lower,
+        upper_value: upper,
     })
 }
 
@@ -332,6 +331,28 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Export> {
                 );
             }
             let (definition, value) = convert_measurement(id.as_str(), measurement)?;
+            let error = measurement
+                .uncertainty
+                .as_ref()
+                .map(|uncertainty| {
+                    ensure!(
+                        uncertainty.is_valid(),
+                        "measurement {name}/{id} has invalid uncertainty"
+                    );
+                    let divisor = if measurement.unit == Unit::BitsPerSecond {
+                        1_000_000_000.0
+                    } else {
+                        1.0
+                    };
+                    Ok(uncertainty.standard_error / divisor)
+                })
+                .transpose()?;
+            let lower_value = error.map(|error| value - error);
+            let upper_value = error.map(|error| value + error);
+            ensure!(
+                lower_value.is_none_or(f64::is_finite) && upper_value.is_none_or(f64::is_finite),
+                "measurement {name}/{id} has non-finite bounds"
+            );
             if let Some(previous) = measures.insert(slug.clone(), definition) {
                 ensure!(
                     previous == measures[&slug],
@@ -342,8 +363,8 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Export> {
                 slug,
                 Metric {
                     value,
-                    lower_value: None,
-                    upper_value: None,
+                    lower_value,
+                    upper_value,
                 },
             );
         }
@@ -393,16 +414,21 @@ mod tests {
     }
 
     #[test]
-    fn repeated_runs_use_mean_and_sample_standard_deviation_in_display_units() {
+    fn repeated_runs_propagate_interval_errors_and_leave_cpu_without_bounds() {
         let samples: Vec<_> = [1.0, 2.0, 3.0]
             .into_iter()
             .map(|value| {
                 let mut benchmark = fixture();
-                benchmark
+                let throughput = benchmark
                     .measurements
                     .get_mut("throughput.receiver")
-                    .unwrap()
-                    .value = value * 1_000_000_000.0;
+                    .unwrap();
+                throughput.value = value * 1_000_000_000.0;
+                throughput.uncertainty = Some(benchy_lib::Uncertainty {
+                    method: benchy_lib::UncertaintyMethod::IndependentIntervals,
+                    sample_count: 30,
+                    standard_error: 100_000_000.0,
+                });
                 benchmark
                     .measurements
                     .get_mut("cpu.gotatun.up")
@@ -412,20 +438,24 @@ mod tests {
             })
             .collect();
         let export = aggregate_samples(&samples).unwrap();
+        let throughput = &export.metrics["gotatun-throughput"]["throughput-receiver"];
+        assert_eq!(throughput.value, 2.0);
+        let expected_error = 0.1 / 3.0_f64.sqrt();
+        assert!((throughput.upper_value.unwrap() - (2.0 + expected_error)).abs() < 1e-12);
+        assert!((throughput.lower_value.unwrap() - (2.0 - expected_error)).abs() < 1e-12);
         assert_eq!(
-            serde_json::to_value(export.metrics).unwrap(),
-            json!({"gotatun-throughput": {
-                "throughput-receiver": {"value": 2.0, "lower_value": 1.0, "upper_value": 3.0},
-                "cpu-gotatun-up": {"value": 200.0, "lower_value": 100.0, "upper_value": 300.0}
-            }})
+            serde_json::to_value(&export.metrics["gotatun-throughput"]["cpu-gotatun-up"]).unwrap(),
+            json!({"value": 200.0})
         );
         let single = aggregate_samples(&samples[..1]).unwrap();
         assert_eq!(single, convert(&samples[0]).unwrap());
-        let constant = summarize([4.0, 4.0].into_iter()).unwrap();
-        assert_eq!(constant.lower_value, Some(4.0));
-        assert_eq!(constant.upper_value, Some(4.0));
-        let pair = summarize([1.0, 3.0].into_iter()).unwrap();
-        assert!((pair.upper_value.unwrap() - (2.0 + 2.0_f64.sqrt())).abs() < 1e-12);
+        let mut missing = samples.clone();
+        missing[1][0]
+            .measurements
+            .get_mut("throughput.receiver")
+            .unwrap()
+            .uncertainty = None;
+        assert!(aggregate_samples(&missing).unwrap().metrics["gotatun-throughput"]["throughput-receiver"].lower_value.is_none());
     }
 
     #[test]
@@ -445,7 +475,54 @@ mod tests {
         let mut changed = first.clone();
         changed.status = BenchmarkStatus::Failed;
         assert!(aggregate_samples(&[vec![first], vec![changed]]).is_err());
-        assert!(summarize([f64::MAX, -f64::MAX].into_iter()).is_err());
+        let huge = [
+            Metric {
+                value: f64::MAX,
+                lower_value: None,
+                upper_value: None,
+            },
+            Metric {
+                value: -f64::MAX,
+                lower_value: None,
+                upper_value: None,
+            },
+        ];
+        assert!(summarize(huge.iter()).is_err());
+    }
+
+    #[test]
+    fn single_run_exports_estimated_standard_error_and_rejects_invalid_uncertainty() {
+        let mut benchmark = fixture();
+        benchmark
+            .measurements
+            .get_mut("throughput.receiver")
+            .unwrap()
+            .uncertainty = Some(benchy_lib::Uncertainty {
+            method: benchy_lib::UncertaintyMethod::IndependentIntervals,
+            sample_count: 30,
+            standard_error: 50_000_000.0,
+        });
+        let export = convert(&[benchmark.clone()]).unwrap();
+        assert_eq!(
+            serde_json::to_value(export.metrics).unwrap(),
+            json!({"gotatun-throughput": {
+                "throughput-receiver": {"value": 2.73, "lower_value": 2.68, "upper_value": 2.78},
+                "cpu-gotatun-up": {"value": 282.1}
+            }})
+        );
+        for (count, error) in [(1, 1.0), (30, -1.0), (30, f64::NAN), (30, f64::INFINITY)] {
+            let mut invalid = benchmark.clone();
+            let uncertainty = invalid
+                .measurements
+                .get_mut("throughput.receiver")
+                .unwrap()
+                .uncertainty
+                .as_mut()
+                .unwrap();
+            uncertainty.sample_count = count;
+            uncertainty.standard_error = error;
+            assert!(convert(&[invalid]).is_err());
+        }
     }
 
     #[test]
@@ -457,6 +534,7 @@ mod tests {
                 label: "Control latency".into(),
                 unit: Unit::Seconds,
                 value: 0.001,
+                uncertainty: None,
             },
         );
         benchmark.measurements.insert(
@@ -465,6 +543,7 @@ mod tests {
                 label: "Received packets".into(),
                 unit: Unit::Count,
                 value: 42.0,
+                uncertainty: None,
             },
         );
         let export = convert(&[benchmark.clone()]).unwrap();
@@ -592,6 +671,7 @@ mod tests {
                     label: label.into(),
                     unit,
                     value,
+                    uncertainty: None,
                 },
             );
         }
@@ -667,6 +747,7 @@ mod tests {
                     label,
                     unit: Unit::Count,
                     value: 1.0,
+                    uncertainty: None,
                 },
             )]);
             assert!(convert(&[benchmark]).is_err());

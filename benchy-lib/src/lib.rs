@@ -147,6 +147,28 @@ pub struct Measurement {
     pub label: String,
     pub unit: Unit,
     pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncertainty: Option<Uncertainty>,
+}
+
+/// Estimated uncertainty of the measurement's mean, in the measurement's own unit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Uncertainty {
+    pub method: UncertaintyMethod,
+    pub sample_count: u32,
+    pub standard_error: f64,
+}
+
+impl Uncertainty {
+    pub fn is_valid(&self) -> bool {
+        self.sample_count >= 2 && self.standard_error.is_finite() && self.standard_error >= 0.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertaintyMethod {
+    IndependentIntervals,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -180,6 +202,33 @@ pub mod iperf {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Output {
         pub end: End,
+        #[serde(flatten)]
+        pub interval_output: IntervalOutput,
+    }
+
+    /// Interval rates describe the endpoint emitting them, rather than both directions.
+    /// `--get-server-output` with a JSON server supplies the other endpoint's intervals.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct IntervalOutput {
+        #[serde(default)]
+        pub intervals: Vec<Interval>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub server_output_json: Option<Box<IntervalOutput>>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Interval {
+        pub sum: IntervalSum,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct IntervalSum {
+        pub bits_per_second: f64,
+        pub seconds: f64,
+        #[serde(default)]
+        pub omitted: bool,
+        #[serde(default)]
+        pub sender: Option<bool>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +259,8 @@ pub mod iperf {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct UdpOutput {
         pub end: UdpEnd,
+        #[serde(flatten)]
+        pub interval_output: IntervalOutput,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +337,7 @@ mod tests {
                     label: "Sender throughput".to_owned(),
                     unit: Unit::BitsPerSecond,
                     value: 2_500_000_000.0,
+                    uncertainty: None,
                 },
             )]),
             run_id: Some("123456".to_owned()),
@@ -335,6 +387,23 @@ mod tests {
                 .to_string()
                 .contains("unsupported benchmark result schema version 2")
         );
+    }
+
+    #[test]
+    fn uncertainty_is_an_optional_v1_measurement_field() {
+        let original = json!({"label": "Throughput", "unit": "bits_per_second", "value": 2e9});
+        let legacy: Measurement = serde_json::from_value(original.clone()).unwrap();
+        assert!(legacy.uncertainty.is_none());
+        assert_eq!(serde_json::to_value(legacy).unwrap(), original);
+        let mut with_uncertainty = original;
+        with_uncertainty["uncertainty"] = json!({
+            "method": "independent_intervals", "sample_count": 30, "standard_error": 5e6
+        });
+        let measurement: Measurement = serde_json::from_value(with_uncertainty.clone()).unwrap();
+        assert!(measurement.uncertainty.as_ref().unwrap().is_valid());
+        assert_eq!(serde_json::to_value(measurement).unwrap(), with_uncertainty);
+        with_uncertainty["uncertainty"]["method"] = json!("unknown");
+        assert!(serde_json::from_value::<Measurement>(with_uncertainty).is_err());
     }
 
     #[test]

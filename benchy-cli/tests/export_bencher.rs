@@ -26,6 +26,9 @@ fn repeated_results(directory: &Path) {
         raw["environment"]["BENCHY_SAMPLE_INDEX"] = json!(index.to_string());
         raw["environment"]["BENCHY_SAMPLE_COUNT"] = json!("3");
         raw["measurements"]["throughput.receiver"]["value"] = json!(index as f64 * 1e9);
+        raw["measurements"]["throughput.receiver"]["uncertainty"] = json!({
+            "method": "independent_intervals", "sample_count": 30, "standard_error": 100_000_000.0
+        });
         fs::write(
             sample.join("gotatun-throughput.json"),
             serde_json::to_vec(&raw).unwrap(),
@@ -43,9 +46,14 @@ fn exports_complete_repeated_runs_with_bounds_and_preserves_raw_samples() {
     let output = exporter(temp.path()).output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let metrics: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let throughput = &metrics["gotatun-throughput"]["throughput-receiver"];
+    assert_eq!(throughput["value"], json!(2.0));
+    assert!(
+        (throughput["upper_value"].as_f64().unwrap() - (2.0 + 0.1 / 3.0_f64.sqrt())).abs() < 1e-12
+    );
     assert_eq!(
-        metrics["gotatun-throughput"]["throughput-receiver"],
-        json!({"value": 2.0, "lower_value": 1.0, "upper_value": 3.0})
+        metrics["gotatun-throughput"]["cpu-gotatun-up"],
+        json!({"value": 282.1})
     );
     assert_eq!(fs::read(source).unwrap(), before);
 }
@@ -161,7 +169,7 @@ fn main() {{
     let metrics: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         metrics["gotatun-throughput"]["throughput-receiver"],
-        json!({"value": 2.73, "lower_value": 2.73, "upper_value": 2.73})
+        json!({"value": 2.73})
     );
     // An existing batch cannot be silently reused, even after a successful run.
     assert!(!run(&results, "").status.success());

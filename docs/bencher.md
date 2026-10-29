@@ -92,6 +92,32 @@ parameters, environment, labels, and failures. Pass the tested revision and bran
 to Benchy's revision. Parameter changes that affect comparability require a different benchmark
 identity or Bencher testbed.
 
+## Throughput uncertainty
+
+The default is one complete 30-second transfer. Sender and receiver throughput may carry an
+`uncertainty` object with `method: independent_intervals`, `sample_count`, and `standard_error`,
+in the raw measurement's unit. The estimate is `s / sqrt(n)`, where `s` is the sample standard
+deviation of interval rates (N−1 denominator). It estimates uncertainty in the transfer's average;
+it is not the interval SD itself or an observed SD across complete runs.
+
+Benchmarks explicitly request one-second iperf reports, a JSON server, and `--get-server-output`.
+Sender intervals supply sender uncertainty; receiver intervals supply receiver uncertainty.
+Omitted warmup intervals and short final fragments (less than 0.9 seconds) are excluded.
+Missing intervals or fewer than two usable intervals produce no uncertainty, rather than zero.
+The whole-transfer throughput value stays as reported in iperf's final summary.
+
+The exporter publishes `lower_value = value - standard_error` and
+`upper_value = value + standard_error`, converting both throughput and its uncertainty to Gb/s.
+These are one-standard-error bounds, not confidence intervals. The model assumes approximately
+independent, similarly sized intervals and negligible additional variation in conditions between
+runs. It does not correct for autocorrelation. Repeated GotaTun trials showed about 1.35% total
+relative SD in throughput over ten consecutive 30-second runs; that is short-term evidence for
+this pragmatic assumption, not proof that between-run effects vanish.
+
+CPU is sampled only over the whole transfer, so it has no estimated uncertainty. UDP jitter,
+packet loss, and profiling values also stay without bounds. Thresholds still compare central
+values; adding bounds does not turn them into significance tests.
+
 ## Repeated complete runs
 
 To measure run-to-run variation, pass `--iterations 10` to `benchy-cli run`, or set the
@@ -109,16 +135,13 @@ artifacts without a manifest can still be exported. All raw samples appear in th
 summary and artifact.
 
 The exporter requires every declared sample and benchmark, identical parameters and measure sets,
-and the same tested revision and workflow attempt. For each measure it publishes the arithmetic
-mean as `value`, with `lower_value = mean - sample standard deviation` and
-`upper_value = mean + sample standard deviation`. Sample standard deviation uses the N−1
-denominator. Unit conversion applies to both the mean and spread. A single run has no bounds.
-
-These bounds describe variation across complete runs, including CPU measurements. They are
-neither confidence intervals nor variation between iperf's one-second intervals. Individual
-samples and their count remain available in the raw artifact; the Bencher report contains one
-aggregate point per measure. Regression thresholds continue to compare central values and do
-not automatically become significance tests because bounds are present.
+and the same tested revision and workflow attempt. It publishes the arithmetic mean as `value`.
+If every sample supplies uncertainty, the aggregate standard error is
+`sqrt(sum(standard_error_i^2)) / iterations`, assuming independent runs and the same negligible
+between-run-effects model. If any sample lacks uncertainty, the aggregate has no bounds. CPU
+therefore stays without bounds regardless of iteration count. Individual samples remain available
+for separately analysing empirical run-to-run variation. Earlier repeated-run reports used
+empirical across-run SD; their already-published historical bounds remain unchanged.
 
 ## PR runs and approval
 

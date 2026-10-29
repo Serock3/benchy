@@ -54,8 +54,9 @@ cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- run \
 ```
 
 Add `--iterations 10 --result-dir benchmark-results/stability` to repeat complete runs.
-Use an empty result directory. Every raw sample is retained; Bencher receives the mean with
-±1 sample-standard-deviation bounds for each measure when there are at least two samples.
+Use an empty result directory. Every raw sample is retained. Throughput includes estimated
+standard-error bounds from iperf's one-second intervals, even with the default single run.
+CPU and other measurements without an uncertainty estimate have no bounds.
 The reusable workflow accepts the same `iterations` input. See
 [repeated runs](docs/bencher.md#repeated-complete-runs) for details.
 

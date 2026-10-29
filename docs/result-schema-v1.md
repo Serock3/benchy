@@ -79,6 +79,23 @@ The supported v1 units are:
 Measurement values are finite JSON numbers. Human-facing code uses `label`; storage, comparisons,
 and chart selection use the measurement ID.
 
+A measurement may additionally include an uncertainty estimate in its own unit:
+
+```json
+"uncertainty": {
+  "method": "independent_intervals",
+  "sample_count": 30,
+  "standard_error": 5000000.0
+}
+```
+
+`standard_error` must be finite and nonnegative, and `sample_count` must be at least two.
+The `independent_intervals` method uses `s / sqrt(n)` to estimate uncertainty of the mean from
+approximately independent interval measurements, assuming negligible additional between-run
+variation. Absence means no estimate is available; it does not mean zero variation. This is an
+optional, additive v1 field. Existing results without it remain valid. Currently only iperf
+throughput records it; CPU, UDP jitter, packet loss, and profiling measurements do not.
+
 ## Parameters and environment
 
 `parameters` contains benchmark-controlled inputs that can affect comparability. `environment`
@@ -99,7 +116,7 @@ are not aggregates. The surrounding `_samples.json` batch manifest has its own v
 
 Multiple samples live in `sample-001/`, `sample-002/`, etc. Single-sample batches keep raw files
 at the top level. The Bencher exporter validates completeness before computing a mean and
-sample-standard-deviation bounds; see [Bencher export](bencher.md#repeated-complete-runs).
+propagating available standard errors; see [Bencher export](bencher.md#repeated-complete-runs).
 
 ## Compatibility
 

@@ -28,7 +28,7 @@ enum Commands {
         benchmarks: String,
         #[arg(long, default_value = "benchmark-results")]
         result_dir: PathBuf,
-        /// Number of complete runs per benchmark; bounds in Bencher use sample standard deviation.
+        /// Number of complete runs per benchmark; defaults to one full transfer.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=100))]
         iterations: u16,
     },

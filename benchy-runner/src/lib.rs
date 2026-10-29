@@ -7,9 +7,10 @@ use std::{
     process::Output,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use benchy_lib::{
-    Benchmark, BenchmarkGroup, BenchmarkStatus, Measurement, MetricId, SchemaVersion, Unit, iperf,
+    Benchmark, BenchmarkGroup, BenchmarkStatus, Measurement, MetricId, SchemaVersion, Uncertainty,
+    UncertaintyMethod, Unit, iperf,
 };
 use chrono::Utc;
 use fs2::FileExt;
@@ -118,6 +119,28 @@ impl Recorder {
         self.dynamic_measurement(definition.id, definition.label, definition.unit, value)
     }
 
+    /// Record throughput with an estimate of the mean's uncertainty from one-second intervals.
+    pub fn iperf_throughput(
+        &mut self,
+        definition: MeasurementDefinition,
+        value: f64,
+        intervals: &iperf::IntervalOutput,
+        sender: bool,
+    ) -> Result<()> {
+        ensure!(
+            definition.unit == Unit::BitsPerSecond,
+            "iperf throughput must use bits/s"
+        );
+        let uncertainty = throughput_uncertainty(intervals, sender)?;
+        self.record(
+            definition.id,
+            definition.label,
+            definition.unit,
+            value,
+            uncertainty,
+        )
+    }
+
     /// Records a measurement whose identity is only known at runtime, such as one derived from a
     /// profiling report. `id` must satisfy the schema-v1 metric ID grammar.
     pub fn dynamic_measurement(
@@ -127,6 +150,17 @@ impl Recorder {
         unit: Unit,
         value: f64,
     ) -> Result<()> {
+        self.record(id, label, unit, value, None)
+    }
+
+    fn record(
+        &mut self,
+        id: &str,
+        label: &str,
+        unit: Unit,
+        value: f64,
+        uncertainty: Option<Uncertainty>,
+    ) -> Result<()> {
         let id = MetricId::new(id)?;
         if label.trim().is_empty() {
             bail!("metric {id} has an empty display label");
@@ -134,6 +168,10 @@ impl Recorder {
         if !value.is_finite() {
             bail!("metric {id} has a non-finite value");
         }
+        ensure!(
+            uncertainty.as_ref().is_none_or(Uncertainty::is_valid),
+            "metric {id} has invalid uncertainty"
+        );
         if self.benchmark.measurements.contains_key(&id) {
             bail!("metric {id} was recorded more than once");
         }
@@ -143,6 +181,7 @@ impl Recorder {
                 label: label.to_owned(),
                 unit,
                 value,
+                uncertainty,
             },
         );
         Ok(())
@@ -169,6 +208,61 @@ impl Recorder {
             .await
             .with_context(|| format!("failed to write {}", self.output.display()))
     }
+}
+
+/// Estimate s/sqrt(n), assuming independent interval rates and negligible run-level effects.
+/// Benchmarks request one-second reports; short final fragments and omitted warmup intervals
+/// are excluded. An unavailable side or fewer than two usable intervals yields no bounds.
+pub fn throughput_uncertainty(
+    output: &iperf::IntervalOutput,
+    sender: bool,
+) -> Result<Option<Uncertainty>> {
+    let intervals = std::iter::once(output)
+        .chain(output.server_output_json.as_deref())
+        .find(|output| {
+            output
+                .intervals
+                .iter()
+                .any(|interval| interval.sum.sender == Some(sender))
+        });
+    let Some(output) = intervals else {
+        return Ok(None);
+    };
+    let (mut count, mut mean, mut squared_deviations) = (0_u32, 0.0, 0.0);
+    for interval in &output.intervals {
+        let sum = &interval.sum;
+        if sum.sender != Some(sender) || sum.omitted {
+            continue;
+        }
+        ensure!(
+            sum.seconds.is_finite()
+                && sum.seconds > 0.0
+                && sum.bits_per_second.is_finite()
+                && sum.bits_per_second >= 0.0,
+            "invalid iperf throughput interval"
+        );
+        if sum.seconds < 0.9 {
+            continue;
+        }
+        count += 1;
+        let delta = sum.bits_per_second - mean;
+        mean += delta / f64::from(count);
+        squared_deviations += delta * (sum.bits_per_second - mean);
+    }
+    if count < 2 {
+        return Ok(None);
+    }
+    let standard_error = (squared_deviations / f64::from(count - 1) / f64::from(count)).sqrt();
+    let uncertainty = Uncertainty {
+        method: UncertaintyMethod::IndependentIntervals,
+        sample_count: count,
+        standard_error,
+    };
+    ensure!(
+        uncertainty.is_valid(),
+        "non-finite iperf interval statistics"
+    );
+    Ok(Some(uncertainty))
 }
 
 pub async fn checked_output<I, S>(program: impl AsRef<OsStr>, args: I) -> Result<Output>
@@ -239,7 +333,78 @@ fn copy_env(target: &mut BTreeMap<String, String>, key: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::default_output_path;
+    use super::{default_output_path, throughput_uncertainty};
+    use benchy_lib::iperf;
+    use serde_json::json;
+
+    fn interval_output() -> iperf::IntervalOutput {
+        serde_json::from_value(json!({
+            "intervals": [
+                {"sum": {"seconds": 1.0, "bits_per_second": 1e9, "sender": true}},
+                {"sum": {"seconds": 1.0, "bits_per_second": 2e9, "sender": true}},
+                {"sum": {"seconds": 1.0, "bits_per_second": 3e9, "sender": true}},
+                {"sum": {"seconds": 1.0, "bits_per_second": 99e9, "sender": true, "omitted": true}},
+                {"sum": {"seconds": 0.003, "bits_per_second": 99e9, "sender": true}}
+            ],
+            "server_output_json": {"intervals": [
+                {"sum": {"seconds": 1.0, "bits_per_second": 1e8, "sender": false}},
+                {"sum": {"seconds": 1.0, "bits_per_second": 2e8, "sender": false}},
+                {"sum": {"seconds": 1.0, "bits_per_second": 3e8, "sender": false}}
+            ]}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn estimates_mean_uncertainty_from_the_correct_endpoint_intervals() {
+        let output = interval_output();
+        let sender = throughput_uncertainty(&output, true).unwrap().unwrap();
+        let receiver = throughput_uncertainty(&output, false).unwrap().unwrap();
+        assert_eq!(sender.sample_count, 3);
+        assert_eq!(receiver.sample_count, 3);
+        assert!((sender.standard_error - 1e9 / 3.0_f64.sqrt()).abs() < 1e-6);
+        assert!((receiver.standard_error - 1e8 / 3.0_f64.sqrt()).abs() < 1e-7);
+        // Direction flags also work for reverse transfers: the receiver may be local.
+        assert_eq!(
+            throughput_uncertainty(output.server_output_json.as_ref().unwrap(), false).unwrap(),
+            Some(receiver)
+        );
+    }
+
+    #[test]
+    fn missing_or_insufficient_intervals_have_no_uncertainty() {
+        assert!(
+            throughput_uncertainty(&iperf::IntervalOutput::default(), true)
+                .unwrap()
+                .is_none()
+        );
+        let mut output = interval_output();
+        output.server_output_json = None;
+        assert!(throughput_uncertainty(&output, false).unwrap().is_none());
+        output.intervals.truncate(1);
+        assert!(throughput_uncertainty(&output, true).unwrap().is_none());
+        output.intervals[0].sum.bits_per_second = 0.0;
+        output.intervals.push(output.intervals[0].clone());
+        assert_eq!(
+            throughput_uncertainty(&output, true)
+                .unwrap()
+                .unwrap()
+                .standard_error,
+            0.0
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_interval_values() {
+        for value in [f64::NAN, f64::INFINITY, -1.0] {
+            let mut output = interval_output();
+            output.intervals[0].sum.bits_per_second = value;
+            assert!(throughput_uncertainty(&output, true).is_err());
+        }
+        let mut output = interval_output();
+        output.intervals[0].sum.seconds = 0.0;
+        assert!(throughput_uncertainty(&output, true).is_err());
+    }
 
     #[test]
     fn default_output_uses_benchmark_name() {
