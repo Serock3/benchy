@@ -17,7 +17,7 @@ impl Publisher {
         fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
         let metrics = temp.path().join("metrics.json");
         fs::write(&metrics, r#"{
-          "gotatun/gotatun-throughput/throughput.receiver": {"bits-per-second": {"value": 2671151827.0}},
+          "gotatun/gotatun-throughput/throughput.receiver": {"gigabits-per-second": {"value": 2.671151827}},
           "gotatun/gotatun-throughput/cpu.gotatun.up": {"percent": {"value": 277.7}}
         }"#).unwrap();
         let script =
@@ -74,7 +74,7 @@ fn creates_only_missing_measures_used_by_the_report() {
     let output = publisher.command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let calls = publisher.read("calls.log");
-    assert!(calls.contains("--slug bits-per-second --units bits/s"));
+    assert!(calls.contains("--slug gigabits-per-second --units Gb/s"));
     assert!(calls.contains("--slug percent --units %"));
     assert!(!calls.contains("--slug seconds"));
     assert!(!calls.contains("--slug count"));
@@ -82,13 +82,24 @@ fn creates_only_missing_measures_used_by_the_report() {
 
 #[test]
 fn unit_mismatches_and_api_failures_do_not_publish_a_report() {
-    for mode in ["wrong-units", "api-failure"] {
+    for mode in ["wrong-units", "wrong-throughput-units", "api-failure"] {
         let mut publisher = Publisher::new(mode);
         let output = publisher.command.output().unwrap();
         assert!(!output.status.success(), "{mode}");
         assert!(!publisher.read("calls.log").contains("run --project"));
         assert!(publisher.read("summary.md").is_empty());
     }
+}
+
+#[test]
+fn creates_gigabit_measure_without_relabelling_existing_bit_measure() {
+    let mut publisher = Publisher::new("legacy-units");
+    let output = publisher.command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let calls = publisher.read("calls.log");
+    assert!(calls.contains("--slug gigabits-per-second --units Gb/s"));
+    assert!(!calls.contains("--slug bits-per-second"));
+    assert!(!calls.contains("measure update"));
 }
 
 #[test]

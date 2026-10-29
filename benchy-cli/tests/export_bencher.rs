@@ -20,8 +20,8 @@ fn exports_result_files_to_stdout_or_a_separate_file() {
         json!(282.1)
     );
     assert_eq!(
-        metrics["gotatun/gotatun-throughput/throughput.receiver"]["bits-per-second"]["value"],
-        json!(2730000000.0)
+        metrics["gotatun/gotatun-throughput/throughput.receiver"]["gigabits-per-second"]["value"],
+        json!(2.73)
     );
     assert_eq!(metrics.as_object().unwrap().len(), 2);
 

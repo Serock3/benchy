@@ -18,8 +18,9 @@ Validation errors do not produce a partial export or truncate an existing output
 
 Each Benchy measurement becomes a Bencher benchmark named
 `<repository>/<benchmark-name>/<measurement-id>`. Display labels are excluded from the identity
-so changing a label does not split the historical series. Values remain in their original units,
-including CPU percentages above 100 (100% represents one logical core).
+so changing a label does not split the historical series. Throughput is converted from raw bits/s
+to decimal Gb/s by dividing by 1,000,000,000. CPU percentages stay unchanged and may exceed 100
+(100% represents one logical CPU). The raw result schema and values remain unchanged.
 
 For example:
 
@@ -29,7 +30,7 @@ For example:
     "percent": { "value": 282.1 }
   },
   "gotatun/gotatun-throughput/throughput.receiver": {
-    "bits-per-second": { "value": 2730000000.0 }
+    "gigabits-per-second": { "value": 2.73 }
   }
 }
 ```
@@ -39,10 +40,14 @@ and `latency` is nanoseconds, so neither is used for our measurements.
 
 | Benchy unit | Bencher measure slug | Bencher measure units |
 | --- | --- | --- |
-| `bits_per_second` | `bits-per-second` | `bits/s` |
+| `bits_per_second` | `gigabits-per-second` | `Gb/s` |
 | `percent` | `percent` | `%` |
 | `seconds` | `seconds` | `s` |
 | `count` | `count` | `count` |
+
+The initial test reports used the `bits-per-second` measure with `bits/s` units. New reports use
+`gigabits-per-second`; the older measure and its values are left intact. Relabelling those older
+values as Gb/s would make them incorrect by a factor of one billion.
 
 The publisher creates any missing measures used by the report and verifies that existing ones
 have the listed units. A mismatch fails publication without changing historical definitions.

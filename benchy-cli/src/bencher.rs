@@ -10,7 +10,7 @@ use benchy_lib::{Benchmark, BenchmarkStatus, Unit};
 use serde::Serialize;
 
 // Bencher's built-in throughput and latency measures have different units. Use custom measures
-// so bits/s, seconds, and CPU percentages (which can exceed 100) are preserved without scaling.
+// to report throughput in Gb/s, time in seconds, and CPU percentages that can exceed 100.
 type Metrics = BTreeMap<String, BTreeMap<&'static str, Metric>>;
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -113,18 +113,10 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Metrics> {
                 measurement.value.is_finite(),
                 "measurement {name} has a non-finite value"
             );
-            let measure = measure_slug(measurement.unit)?;
+            let (measure, value) = convert_measurement(measurement.unit, measurement.value)?;
             ensure!(
                 metrics
-                    .insert(
-                        name.clone(),
-                        BTreeMap::from([(
-                            measure,
-                            Metric {
-                                value: measurement.value
-                            }
-                        )]),
-                    )
+                    .insert(name.clone(), BTreeMap::from([(measure, Metric { value })]))
                     .is_none(),
                 "duplicate benchmark measurement: {name}"
             );
@@ -133,12 +125,12 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Metrics> {
     Ok(metrics)
 }
 
-fn measure_slug(unit: Unit) -> Result<&'static str> {
+fn convert_measurement(unit: Unit, value: f64) -> Result<(&'static str, f64)> {
     match unit {
-        Unit::BitsPerSecond => Ok("bits-per-second"),
-        Unit::Percent => Ok("percent"),
-        Unit::Seconds => Ok("seconds"),
-        Unit::Count => Ok("count"),
+        Unit::BitsPerSecond => Ok(("gigabits-per-second", value / 1_000_000_000.0)),
+        Unit::Percent => Ok(("percent", value)),
+        Unit::Seconds => Ok(("seconds", value)),
+        Unit::Count => Ok(("count", value)),
         _ => bail!("unsupported Bencher measurement unit: {unit:?}"),
     }
 }
@@ -155,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_all_units_without_scaling_or_display_labels_in_identity() {
+    fn exports_units_without_display_labels_in_identity() {
         let mut benchmark = fixture();
         benchmark.measurements.insert(
             benchy_lib::MetricId::new("latency.control").unwrap(),
@@ -178,7 +170,7 @@ mod tests {
             serde_json::to_value(&metrics).unwrap(),
             json!({
                 "gotatun/gotatun-throughput/cpu.gotatun.up": {"percent": {"value": 282.1}},
-                "gotatun/gotatun-throughput/throughput.receiver": {"bits-per-second": {"value": 2730000000.0}},
+                "gotatun/gotatun-throughput/throughput.receiver": {"gigabits-per-second": {"value": 2.73}},
                 "gotatun/gotatun-throughput/latency.control": {"seconds": {"value": 0.001}},
                 "gotatun/gotatun-throughput/packets.received": {"count": {"value": 42.0}}
             })
@@ -187,6 +179,26 @@ mod tests {
             measurement.label = "New display label".into();
         }
         assert_eq!(metrics, convert(&[benchmark]).unwrap());
+    }
+
+    #[test]
+    fn throughput_uses_decimal_gigabits_without_rounding_or_mutating_raw_results() {
+        let mut benchmark = fixture();
+        let bps = 2_692_981_372.578_039;
+        benchmark
+            .measurements
+            .get_mut("throughput.receiver")
+            .unwrap()
+            .value = bps;
+        let metrics = convert(std::slice::from_ref(&benchmark)).unwrap();
+        let gbps =
+            metrics["gotatun/gotatun-throughput/throughput.receiver"]["gigabits-per-second"].value;
+        assert!((gbps - 2.692_981_372_578_039).abs() < 1e-15);
+        assert_eq!(benchmark.measurements["throughput.receiver"].value, bps);
+        assert_eq!(
+            convert_measurement(Unit::BitsPerSecond, 0.0).unwrap().1,
+            0.0
+        );
     }
 
     #[test]

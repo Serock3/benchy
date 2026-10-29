@@ -31,7 +31,7 @@ while read -r slug units; do
       --units "$units" --attempts 3 > /dev/null
   fi
 done <<'MEASURES'
-bits-per-second bits/s
+gigabits-per-second Gb/s
 percent %
 seconds s
 count count

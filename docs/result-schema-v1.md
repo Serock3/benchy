@@ -15,7 +15,7 @@ identifiers from presentation text so labels can improve without splitting a his
   "date": "2026-09-25T12:00:00Z",
   "measurements": {
     "cpu.gotatun.up": {
-      "label": "UP GotaTun CPU",
+      "label": "UP GotaTun CPU (% of one logical CPU)",
       "unit": "percent",
       "value": 282.1
     },
