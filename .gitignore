@@ -1,4 +1,7 @@
 /target/
 /benchmark-results/
+# Local secrets, never commit.
+/.envrc
+/.envrc.local
 # Ignore local build output from the retired frontend.
 /benchy-gui/dist/
