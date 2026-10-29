@@ -188,6 +188,7 @@ fn convert_measurement(id: &str, measurement: &Measurement) -> Result<(Measure, 
         }
         Unit::Percent => ("%", "%", measurement.value),
         Unit::Seconds => ("s", "s", measurement.value),
+        Unit::Nanoseconds => ("nanoseconds", "ns", measurement.value),
         Unit::Count => ("count", "count", measurement.value),
         Unit::Bytes => ("bytes", "B", measurement.value),
         unit => bail!("unsupported Bencher measurement unit: {unit:?}"),
@@ -347,6 +348,12 @@ mod tests {
                 2_800_000_000.0,
             ),
             ("udp.lost_percent", "UDP packet loss", Unit::Percent, 1.5),
+            (
+                "hotpath.receive_packet_data",
+                "receive_packet_data time per call",
+                Unit::Nanoseconds,
+                753.7,
+            ),
         ] {
             benchmark.measurements.insert(
                 benchy_lib::MetricId::new(id).unwrap(),
@@ -359,7 +366,7 @@ mod tests {
         }
         let export = convert(&[benchmark]).unwrap();
         assert_eq!(export.metrics.len(), 1);
-        assert_eq!(export.metrics["gotatun-throughput"].len(), 7);
+        assert_eq!(export.metrics["gotatun-throughput"].len(), 8);
         assert_eq!(
             export.metrics["gotatun-throughput"]["cpu-gotatun-down"].value,
             371.5
@@ -377,6 +384,14 @@ mod tests {
             "UDP packet loss (%)"
         );
         assert_eq!(export.measures["udp-lost-percent"].units, "%");
+        assert_eq!(
+            export.measures["hotpath-receive-packet-data"].name,
+            "receive_packet_data time per call (ns)"
+        );
+        assert_eq!(
+            export.measures["hotpath-receive-packet-data"].units,
+            "nanoseconds"
+        );
     }
 
     #[test]

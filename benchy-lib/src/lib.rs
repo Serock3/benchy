@@ -156,6 +156,7 @@ pub enum Unit {
     BitsPerSecond,
     Percent,
     Seconds,
+    Nanoseconds,
     Count,
     Bytes,
 }
@@ -166,6 +167,7 @@ impl Unit {
             Self::BitsPerSecond => "bits_per_second",
             Self::Percent => "percent",
             Self::Seconds => "seconds",
+            Self::Nanoseconds => "nanoseconds",
             Self::Count => "count",
             Self::Bytes => "bytes",
         }

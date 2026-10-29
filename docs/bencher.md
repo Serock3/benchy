@@ -65,6 +65,7 @@ operations/s and `latency` is nanoseconds, so neither is used for our measuremen
 | `percent` with a `cpu.*` metric ID | `(logical CPU %)` | `% of one logical CPU` |
 | Other `percent`, e.g. UDP packet loss | `(%)` | `%` |
 | `seconds` | `(s)` | `s` |
+| `nanoseconds` | `(ns)` | `nanoseconds` |
 | `count` | `(count)` | `count` |
 | `bytes` | `(B)` | `bytes` |
 

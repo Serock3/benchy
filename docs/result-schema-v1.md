@@ -72,6 +72,7 @@ The supported v1 units are:
 - `bits_per_second`
 - `percent`, normalized so 100% is one logical CPU core
 - `seconds`
+- `nanoseconds`
 - `count`
 - `bytes`
 
