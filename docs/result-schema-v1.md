@@ -73,6 +73,7 @@ The supported v1 units are:
 - `percent`, normalized so 100% is one logical CPU core
 - `seconds`
 - `count`
+- `bytes`
 
 Measurement values are finite JSON numbers. Human-facing code uses `label`; storage, comparisons,
 and chart selection use the measurement ID.

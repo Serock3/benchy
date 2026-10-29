@@ -189,6 +189,7 @@ fn convert_measurement(id: &str, measurement: &Measurement) -> Result<(Measure, 
         Unit::Percent => ("%", "%", measurement.value),
         Unit::Seconds => ("s", "s", measurement.value),
         Unit::Count => ("count", "count", measurement.value),
+        Unit::Bytes => ("bytes", "B", measurement.value),
         unit => bail!("unsupported Bencher measurement unit: {unit:?}"),
     };
     let label = measurement.label.trim();

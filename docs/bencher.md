@@ -66,6 +66,7 @@ operations/s and `latency` is nanoseconds, so neither is used for our measuremen
 | Other `percent`, e.g. UDP packet loss | `(%)` | `%` |
 | `seconds` | `(s)` | `s` |
 | `count` | `(count)` | `count` |
+| `bytes` | `(B)` | `bytes` |
 
 Names use the raw measurement's label followed by the suffix above; the earlier CPU suffix
 `(% of one logical CPU)` is replaced rather than duplicated. Bencher limits measure names and

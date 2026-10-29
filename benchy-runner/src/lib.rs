@@ -15,6 +15,8 @@ use chrono::Utc;
 use fs2::FileExt;
 use tokio::process::Command;
 
+pub mod hotpath;
+
 #[derive(Debug, Clone, Copy)]
 pub struct BenchmarkDefinition {
     pub repository: &'static str,
@@ -111,8 +113,20 @@ impl Recorder {
     }
 
     pub fn measurement(&mut self, definition: MeasurementDefinition, value: f64) -> Result<()> {
-        let id = MetricId::new(definition.id)?;
-        if definition.label.trim().is_empty() {
+        self.dynamic_measurement(definition.id, definition.label, definition.unit, value)
+    }
+
+    /// Records a measurement whose identity is only known at runtime, such as one derived from a
+    /// profiling report. `id` must satisfy the schema-v1 metric ID grammar.
+    pub fn dynamic_measurement(
+        &mut self,
+        id: &str,
+        label: &str,
+        unit: Unit,
+        value: f64,
+    ) -> Result<()> {
+        let id = MetricId::new(id)?;
+        if label.trim().is_empty() {
             bail!("metric {id} has an empty display label");
         }
         if !value.is_finite() {
@@ -124,8 +138,8 @@ impl Recorder {
         self.benchmark.measurements.insert(
             id,
             Measurement {
-                label: definition.label.to_owned(),
-                unit: definition.unit,
+                label: label.to_owned(),
+                unit,
                 value,
             },
         );

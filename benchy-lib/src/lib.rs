@@ -157,6 +157,7 @@ pub enum Unit {
     Percent,
     Seconds,
     Count,
+    Bytes,
 }
 
 impl Unit {
@@ -166,6 +167,7 @@ impl Unit {
             Self::Percent => "percent",
             Self::Seconds => "seconds",
             Self::Count => "count",
+            Self::Bytes => "bytes",
         }
     }
 }
