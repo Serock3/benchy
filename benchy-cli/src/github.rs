@@ -205,13 +205,11 @@ fn resolve(
 
     let (branch, pull_request) = match run.event.as_str() {
         "pull_request" => {
-            // GitHub can omit run.pull_requests for fork PRs. Recover candidates from the
-            // commit association API, but never trust a PR number or branch from an artifact.
+            // GitHub can omit run.pull_requests for fork PRs. Recover candidates using
+            // GitHub's pull request head filter or the commit association API, but never
+            // trust a PR number or branch from an artifact.
             let candidates: Vec<PullRequest> = if run.pull_requests.is_empty() {
-                serde_json::from_value(api(&format!(
-                    "repos/{repository}/commits/{}/pulls?per_page=100",
-                    run.head_sha
-                ))?)?
+                pull_request_candidates(&run, repository, api)?
             } else {
                 run.pull_requests
                     .iter()
@@ -297,6 +295,53 @@ fn resolve(
     }))
 }
 
+/// GitHub omits `run.pull_requests` for fork PRs. Recover candidates using GitHub's pull
+/// request head filter, which also covers fork heads; the commit association API indexes
+/// fork commits on the fork instead of the product repository, so it only serves as a
+/// fallback when the head filter has no results.
+fn pull_request_candidates(
+    run: &Run,
+    repository: &str,
+    api: &mut impl FnMut(&str) -> Result<Value>,
+) -> Result<Vec<PullRequest>> {
+    if let Some(branch) = run.head_branch.as_deref() {
+        let owner = run
+            .head_repository
+            .full_name
+            .split('/')
+            .next()
+            .filter(|owner| !owner.is_empty())
+            .context("source run has no head repository owner")?;
+        let listed: Vec<PullRequest> = serde_json::from_value(api(&format!(
+            "repos/{repository}/pulls?head={}:{}&per_page=100",
+            percent_encode(owner),
+            percent_encode(branch),
+        ))?)
+        .context("invalid pull request head filter response")?;
+        if !listed.is_empty() {
+            return Ok(listed);
+        }
+    }
+    serde_json::from_value(api(&format!(
+        "repos/{repository}/commits/{}/pulls?per_page=100",
+        run.head_sha
+    ))?)
+    .context("invalid pull request association response")
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 fn validate_repository(repository: &str) -> Result<()> {
     let parts: Vec<_> = repository.split('/').collect();
     ensure!(
@@ -375,9 +420,15 @@ mod tests {
         prs: Vec<Value>,
         artifacts: Value,
     ) -> Result<Option<Publication>> {
+        let head_owner = run["head_repository"]["full_name"]
+            .as_str()
+            .and_then(|name| name.split('/').next())
+            .unwrap_or("contributor");
+        let head_filter = format!("repos/{REPO}/pulls?head={head_owner}:feature&per_page=100");
         resolve(event, REPO, WORKFLOW, &mut |endpoint| match endpoint {
             "repos/owner/product/actions/runs/11/attempts/2" => Ok(run.clone()),
             "repos/owner/product/pulls/7" => Ok(prs[0].clone()),
+            path if path == head_filter => Ok(json!(prs)),
             path if path == format!("repos/{REPO}/commits/{SHA}/pulls?per_page=100") => {
                 Ok(json!(prs))
             }
@@ -413,6 +464,51 @@ mod tests {
             assert_eq!(pr.base_sha, BASE_SHA);
             assert!(context.outputs().unwrap().contains("pr-number=7\n"));
         }
+    }
+
+    #[test]
+    fn prefers_the_head_filter_over_commit_associations_for_fork_prs() {
+        let run = run("pull_request", true);
+        let context = resolve(
+            &event(&run),
+            REPO,
+            WORKFLOW,
+            &mut |endpoint| match endpoint {
+                "repos/owner/product/actions/runs/11/attempts/2" => Ok(run.clone()),
+                "repos/owner/product/pulls?head=contributor:feature&per_page=100" => {
+                    Ok(json!([pr(true)]))
+                }
+                "repos/owner/product/actions/runs/11/artifacts?per_page=100" => Ok(artifacts()),
+                _ => bail!("unexpected API request: {endpoint}"),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(context.branch, "pr/7");
+        assert_eq!(context.pull_request.as_ref().unwrap().number, 7);
+    }
+
+    #[test]
+    fn resolves_fork_prs_via_commit_association_when_the_head_filter_is_empty() {
+        let run = run("pull_request", true);
+        let context = resolve(
+            &event(&run),
+            REPO,
+            WORKFLOW,
+            &mut |endpoint| match endpoint {
+                "repos/owner/product/actions/runs/11/attempts/2" => Ok(run.clone()),
+                "repos/owner/product/pulls?head=contributor:feature&per_page=100" => Ok(json!([])),
+                path if path == format!("repos/{REPO}/commits/{SHA}/pulls?per_page=100") => {
+                    Ok(json!([pr(true)]))
+                }
+                "repos/owner/product/actions/runs/11/artifacts?per_page=100" => Ok(artifacts()),
+                _ => bail!("unexpected API request: {endpoint}"),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(context.branch, "pr/7");
+        assert_eq!(context.pull_request.as_ref().unwrap().number, 7);
     }
 
     #[test]
@@ -524,5 +620,12 @@ mod tests {
         assert!(output_value("feature\rmain").is_err());
         assert!(validate_repository("owner/repo?malicious=true").is_err());
         assert!(validate_sha("not-a-commit").is_err());
+    }
+
+    #[test]
+    fn branch_names_are_percent_encoded_for_the_head_filter() {
+        assert_eq!(percent_encode("feature"), "feature");
+        assert_eq!(percent_encode("feat/x"), "feat/x");
+        assert_eq!(percent_encode("a b&c+d"), "a%20b%26c%2Bd");
     }
 }
