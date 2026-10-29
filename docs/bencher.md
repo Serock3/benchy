@@ -92,11 +92,14 @@ identity or Bencher testbed.
 
 ## PR runs and approval
 
-The product's `Benchmarks` workflow runs on pushes to `main`, PRs targeting `main`, and manual
-dispatch with a benchmark selection. It calls `run-benchmarks.yml` with read-only repository
+GotaTun's `Benchmarks` workflow runs on pushes to `main`; the app's runs nightly on `main` at
+01:17 UTC. Both run for PRs targeting `main` and support manual dispatch with a benchmark
+selection. They call `run-benchmarks.yml` with read-only repository
 permissions and no secrets. PRs check out the head repository and exact head SHA. The workflow
 sets `BENCHY_SOURCE_SHA` and `BENCHY_SOURCE_BRANCH=pr/<number>` so the raw results identify that
-commit rather than GitHub's synthetic merge commit. Other runs use the selected commit and branch.
+commit rather than GitHub's synthetic merge commit. Other runs use the selected commit and branch;
+scheduled runs use the latest commit on the default branch. The publisher accepts `schedule`
+events with the same source-run and artifact validation as push and manual runs.
 
 Before enabling this trigger, configure **Settings → Actions → General → Approval for running
 fork pull request workflows from contributors → Require approval for all external contributors**.

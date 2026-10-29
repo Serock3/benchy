@@ -76,7 +76,8 @@ using the project key. Only the publishing step receives the key. The benchmark 
 Alice with a read-only repository token and no Bencher secrets. The trusted publisher runs on
 GitHub with permission to read artifacts and write checks/PR comments.
 
-GotaTun runs benchmarks on pushes to `main`, PRs targeting `main`, and manual dispatch. Configure
+GotaTun runs benchmarks on pushes to `main`; the app runs nightly on `main` at 01:17 UTC. Both
+run for PRs targeting `main` and support manual dispatch with a benchmark selection. Configure
 **Settings → Actions → General → Require approval for all external contributors** before enabling
 the PR trigger. Internal PRs run automatically; external PRs wait for a maintainer to approve
 workflows from the PR page. Approval authorizes executing that revision on Alice/Bob; it does not

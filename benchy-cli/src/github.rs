@@ -257,7 +257,7 @@ fn resolve(
                 }),
             )
         }
-        "push" | "workflow_dispatch" => {
+        "push" | "workflow_dispatch" | "schedule" => {
             ensure!(
                 run.head_repository.full_name == repository,
                 "non-PR run comes from a different repository"
@@ -438,15 +438,26 @@ mod tests {
     }
 
     #[test]
-    fn resolves_dispatch_and_exact_attempt_artifact_without_a_pr() {
-        let run = run("workflow_dispatch", false);
-        let context = resolve_mock(&event(&run), run, vec![], artifacts())
-            .unwrap()
-            .unwrap();
-        assert_eq!(context.sha, SHA);
-        assert_eq!(context.branch, "feature");
-        assert_eq!(context.artifact_id, 33);
-        assert!(context.pull_request.is_none());
+    fn resolves_non_pr_runs_and_exact_attempt_artifact_without_a_pr() {
+        for source_event in ["push", "workflow_dispatch", "schedule"] {
+            let branch = if source_event == "schedule" {
+                "main"
+            } else {
+                "feature"
+            };
+            let mut source_run = run(source_event, false);
+            source_run["head_branch"] = json!(branch);
+            let context = resolve_mock(&event(&source_run), source_run, vec![], artifacts())
+                .unwrap()
+                .unwrap();
+            assert_eq!(context.sha, SHA);
+            assert_eq!(context.branch, branch);
+            assert_eq!(context.artifact_id, 33);
+            assert!(context.pull_request.is_none());
+
+            let foreign = run(source_event, true);
+            assert!(resolve_mock(&event(&foreign), foreign, vec![], artifacts()).is_err());
+        }
     }
 
     #[test]
