@@ -23,9 +23,11 @@ The per-run JSON files use the versioned result schema documented in
 and printed verbatim in the workflow run summary for quick inspection. Alice runs benchmarks and
 writes result files; there is no persistent results database or web service to deploy there.
 
-Bencher Cloud will provide metric history, plots, and GitHub reporting. `benchy-cli export-bencher`
-converts result files to Bencher Metric Format (BMF); the publisher is the next implementation
-step. The current workflow only uploads raw JSON artifacts.
+Bencher Cloud provides metric history and plots. `benchy-cli export-bencher` converts result files
+to Bencher Metric Format (BMF). When a Bencher project is configured, a GitHub-hosted publishing
+job submits successful results and links the report in the workflow summary. Both raw JSON and
+Bencher diagnostics remain available as artifacts. PR comments and regression thresholds are
+future additions.
 
 ## Local layout
 
@@ -64,12 +66,12 @@ values: each key is scoped to its own Bencher project. Store the credentials in 
 that launches the workflow (currently the product forks), not in the shared Benchy repository or
 on Alice. The `export BENCHER_API_KEY=...` command shown by Bencher is for local CLI use.
 
-These settings prepare for the publisher; the current reusable workflow does not consume them.
-When implemented, the caller will pass the project slug as an input and explicitly forward the
-named secret to the reusable workflow. A GitHub-hosted publishing job will download the result
-artifact, convert it to Bencher Metric Format, and submit it using the project key. Credentials
-and GitHub reporting permissions belong to that job. The benchmark job on Alice continues to
-execute with read-only repository access.
+The caller passes the project slug as `bencher-project` and explicitly forwards the named secret
+to the reusable workflow; see the example in [`docs/bencher.md`](docs/bencher.md). An empty project
+slug disables publication. The optional `bencher-testbed` input defaults to `alice-bob-v1`.
+The publisher downloads the benchmark artifact, converts it, verifies the units, and submits it
+using the project key. Only the publishing step receives the key. Both jobs use read-only
+repository permissions; the benchmark job runs on Alice and the publisher runs on GitHub.
 
 Roll out with a manual GotaTun run, verify units and source metadata against the raw JSON, then
 add baseline history and PR reporting. Repeat for mullvadvpn-app after the pilot. Legacy app-bench
@@ -79,7 +81,7 @@ retention is finite, so they are not a permanent archive.
 
 See Bencher's [custom benchmark guide](https://bencher.dev/docs/how-to/track-custom-benchmarks/)
 and [GitHub Actions guide](https://bencher.dev/docs/how-to/github-actions/). The local conversion
-command, measure mapping, and planned publishing job are documented in
+command, measure mapping, and publishing job are documented in
 [`docs/bencher.md`](docs/bencher.md).
 
 ## Future profiling

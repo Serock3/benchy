@@ -44,10 +44,10 @@ and `latency` is nanoseconds, so neither is used for our measurements.
 | `seconds` | `seconds` | `s` |
 | `count` | `count` | `count` |
 
-Create these measures with the listed slugs and units in each Bencher project before the first
-publication. BMF contains metric values and measure identifiers, but no unit metadata. Bencher
-can create measures automatically from BMF, but explicitly configuring their units avoids relying
-on those defaults. The future publisher should verify these definitions before uploading.
+The publisher creates any missing measures used by the report and verifies that existing ones
+have the listed units. A mismatch fails publication without changing historical definitions.
+BMF contains metric values and measure identifiers, but no unit metadata, so these definitions
+are configured explicitly before uploading.
 
 The BMF file contains only metrics. Preserve the raw JSON artifact for source metadata,
 parameters, environment, labels, and failures. Pass the tested revision and branch explicitly to
@@ -55,35 +55,35 @@ parameters, environment, labels, and failures. Pass the tested revision and bran
 to Benchy's revision. Parameter changes that affect comparability require a different benchmark
 identity or Bencher testbed.
 
-## Planned publishing job
+## Publishing job
 
-No new runner needs to be installed. Add a second job to
-`.github/workflows/run-benchmarks.yml`, with this structure:
+The reusable workflow in `.github/workflows/run-benchmarks.yml` contains two jobs:
 
 ```yaml
 jobs:
   benchmark:
-    # Existing job on Alice, including raw result artifact upload.
+    # Runs benchmarks and uploads the raw result artifact.
     runs-on: ${{ fromJSON(inputs.runner-labels) }}
-    # ...existing steps...
 
   publish:
     needs: benchmark
+    if: ${{ inputs.bencher-project != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # ...download artifact, build converter, configure Bencher CLI, and submit...
+    # Converts and publishes results using the product's project key.
 ```
 
 `ubuntu-latest` requests a fresh GitHub-hosted machine. `needs: benchmark` waits until Alice's
 job succeeds; failures still retain their raw artifact and summary, without entering the baseline.
-The existing artifact name includes the run ID and attempt; download that exact artifact with
-`actions/download-artifact` in the publisher. Build the converter from the trusted Benchy
-checkout and treat the downloaded JSON as data. There is no reason to build or execute product
-code in this job.
+The benchmark job passes its exact artifact ID and Benchy commit to the publisher. The publisher
+downloads that artifact and checks out the matching framework revision, verifies the raw results'
+commit, branch, run ID, and original attempt, then builds the converter. Using the original
+artifact ID and attempt also allows retrying a failed publishing job while retaining the earlier
+successful benchmark job. Product source is not checked out or executed by the publisher.
 
-Define an optional `bencher-project` input and a named `BENCHER_API_KEY` secret in
-`on.workflow_call`. Each product caller will supply:
+Each product caller supplies the optional `bencher-project` input and explicitly forwards the
+named `BENCHER_API_KEY` secret:
 
 ```yaml
 jobs:
@@ -97,23 +97,35 @@ jobs:
       BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
 ```
 
-This caller example is for the future publisher: the current reusable workflow does not yet
-declare these settings. Only the publisher should reference the key in a step's environment.
-An empty project input can leave publication disabled for repositories still using artifacts.
+Only the publishing step references the key in its environment. An empty project input disables
+publication for repositories still using artifacts. A configured project without a forwarded key
+fails publication with an explicit error. Set the Actions repository variable `BENCHER_PROJECT`
+to `gotatun-test` for the GotaTun pilot; `mullvad-test` is a different project and rejects that key.
+Each product repository can have different values under the same variable and secret names.
 
-After downloading and converting the artifact, the publishing command will have this form:
+After downloading and converting the artifact, `scripts/publish-bencher.sh` configures the
+required measures and runs the equivalent of:
 
 ```console
 bencher run --project "$BENCHER_PROJECT" \
-  --branch "$TESTED_BRANCH" --hash "$TESTED_COMMIT" \
-  --testbed alice-bob-v1 --adapter json --file bencher.json
+  --branch "$GITHUB_REF_NAME" --hash "$GITHUB_SHA" \
+  --testbed "$BENCHER_TESTBED" --adapter json --file bencher-results/metrics.json
 ```
 
-Set `BENCHER_API_KEY` in that step's environment from the forwarded secret. Set the branch and
-commit from the benchmark's tested revision, and use a stable testbed for the Alice/Bob setup.
-Keep the converted file as another diagnostic artifact so an upload can be retried without
-rerunning the benchmark. Introduce GitHub checks/PR comments and regression thresholds after
-verifying a manual GotaTun upload; those reporting features require additional job permissions.
+The tested commit and branch are taken from the calling workflow context, checked against the
+raw results before publishing, and passed explicitly so the framework checkout cannot change
+their attribution. Use the optional `bencher-testbed` input (default `alice-bob-v1`) to distinguish
+hardware or configuration changes that affect comparability.
+
+The Bencher CLI returns a JSON report, saved as `bencher-results/report.json`, and its URL is
+added to the workflow summary. The converted metrics and report are uploaded as
+`bencher-results-<run-id>-<publishing-attempt>` even when publication fails. Raw results remain in
+their original artifact. Authentication, unit, and service errors fail the publishing job without
+rerunning or discarding the benchmark. The official setup action installs the latest CLI for
+Bencher Cloud compatibility; the action itself is pinned to a commit.
+
+Neither GitHub checks/PR comments nor regression thresholds are enabled yet. They can follow
+after an end-to-end Actions pilot; reporting features will require additional job permissions.
 
 ## References
 
