@@ -16,21 +16,15 @@ establishes the tunnel, and measures it with iperf3.
   machine lock.
 - `benchy-lib` contains the versioned result artifact types shared by benchmark crates and the
   runner.
-- `benchy-store` validates and transactionally ingests result documents into SQLite.
-- `benchy-serve` exposes stored results as JSON and serves the web frontend.
-- `benchy-gui` is the egui frontend, with separate plots for each measurement unit.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
 
 The per-run JSON files use the versioned result schema documented in
 [`docs/result-schema-v1.md`](docs/result-schema-v1.md). They are uploaded as diagnostic artifacts
-and printed verbatim in the workflow run summary for quick inspection. The reusable workflow also
-ingests them into a persistent SQLite database for the results interface.
+and printed verbatim in the workflow run summary for quick inspection. Alice runs benchmarks and
+writes result files; there is no persistent results database or web service to deploy there.
 
-By default, the database is stored at
-`$XDG_DATA_HOME/benchy/results.sqlite3`, or `$HOME/.local/share/benchy/results.sqlite3` when
-`XDG_DATA_HOME` is unset. A caller can override it with the reusable workflow's `database-path`
-input. The database uses WAL mode, foreign-key enforcement, and transactional batch ingestion.
-Re-running the same GitHub workflow attempt updates its existing rows instead of duplicating them.
+Bencher Cloud will provide metric history, plots, and GitHub reporting. The converter and publisher
+are the next implementation step; the current workflow only uploads raw JSON artifacts.
 
 ## Local layout
 
@@ -52,50 +46,48 @@ cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- list \
 cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- run \
   --manifest-path gotatun/benchmarks/Cargo.toml \
   --benchmarks default
-
-cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- ingest \
-  --database /tmp/benchy-results.sqlite3 \
-  --result-dir benchmark-results
-
-cargo run --manifest-path benchy/Cargo.toml --package benchy-cli -- inspect \
-  --database /tmp/benchy-results.sqlite3
 ```
 
-`inspect` prints the newest runs, their status, commit, and measurement count. Add `--json` for
-machine-readable output.
+## Bencher Cloud setup and rollout
 
-## Results interface
+Create a public Bencher project for each product repository. In **each product repository** on
+GitHub, open **Settings → Secrets and variables → Actions** and configure:
 
-Build the WASM frontend and start the server from the Benchy repository root:
+| Kind | Name | Value |
+| --- | --- | --- |
+| Repository secret | `BENCHER_API_KEY` | The project API key's value, without `export BENCHER_API_KEY=` or surrounding quotes |
+| Repository variable | `BENCHER_PROJECT` | The Bencher project slug, e.g. `gotatun-test` |
 
-```console
-rustup target add wasm32-unknown-unknown
-cargo install --locked trunk
-cd benchy-gui
-trunk build --release
-cd ..
-cargo run --release --package benchy-serve
-```
+The GotaTun and mullvadvpn-app repositories use the same configuration names with different
+values: each key is scoped to its own Bencher project. Store the credentials in the repository
+that launches the workflow (currently the product forks), not in the shared Benchy repository or
+on Alice. The `export BENCHER_API_KEY=...` command shown by Bencher is for local CLI use.
 
-The server reads the same default database as the workflow and serves Rocket's default address,
-`http://127.0.0.1:8000`. Configure it with:
+These settings prepare for the publisher; the current reusable workflow does not consume them.
+When implemented, the caller will pass the project slug as an input and explicitly forward the
+named secret to the reusable workflow. A GitHub-hosted publishing job will download the result
+artifact, convert it to Bencher Metric Format, and submit it using the project key. Credentials
+and GitHub reporting permissions belong to that job. The benchmark job on Alice continues to
+execute with read-only repository access.
 
-- `BENCHY_DATABASE_PATH` for a different SQLite database.
-- `BENCHY_FRONTEND_PATH` for a different frontend distribution directory.
-- Rocket configuration such as `ROCKET_ADDRESS` and `ROCKET_PORT` for the listening socket.
+Roll out with a manual GotaTun run, verify units and source metadata against the raw JSON, then
+add baseline history and PR reporting. Repeat for mullvadvpn-app after the pilot. Legacy app-bench
+JSON can be evaluated for a one-time import; results from the experimental SQLite store do not
+need migration. Keep raw artifacts for debugging and retrying publication; GitHub artifact
+retention is finite, so they are not a permanent archive.
 
-The API endpoints are `/api/benchmarks` and `/api/health`. Database access is read-only and runs on
-blocking worker threads so concurrent WAL writes from benchmark workflows remain safe.
+See Bencher's [custom benchmark guide](https://bencher.dev/docs/how-to/track-custom-benchmarks/)
+and [GitHub Actions guide](https://bencher.dev/docs/how-to/github-actions/).
 
-For Alice, build the frontend on a development machine and copy `benchy-gui/dist` to a persistent
-Benchy checkout at `/home/mole/benchy/benchy-gui/dist`. Build the server in that checkout with
-`cargo build --locked --release --package benchy-serve`. The example
-[`deploy/benchy-serve.service`](deploy/benchy-serve.service) runs it as `mole` on
-`127.0.0.1:8001`, leaving the existing web service alone. Install it with
-`sudo cp deploy/benchy-serve.service /etc/systemd/system/`, then
-`sudo systemctl daemon-reload` and `sudo systemctl enable --now benchy-serve.service`.
-From a workstation that can SSH to Alice, `ssh -L 8001:127.0.0.1:8001 mole@benchy-alice` makes
-the interface available at `http://127.0.0.1:8001`.
+## Future profiling
+
+Consider [Dial9](https://github.com/dial9-rs/dial9) and
+[hotpath-rs](https://github.com/pawurb/hotpath-rs) as possible profiling integrations. Profiling
+should be opt-in initially, since instrumentation may affect the benchmark measurements.
+Associate profile artifacts with the benchmark ID, commit, workflow run, parameters, and endpoint
+role so developers can find them alongside numeric results. Start with Actions artifacts and
+links from the workflow summary; evaluate longer-term storage and viewers when profiling is
+implemented. No profiler is currently integrated into Benchy.
 
 ## Controller prerequisites
 

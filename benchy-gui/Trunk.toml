@@ -1,5 +1,0 @@
-[build]
-target = "index.html"
-dist = "dist"
-filehash = true
-minify = "never"

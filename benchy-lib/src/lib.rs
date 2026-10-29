@@ -149,23 +149,6 @@ pub struct Measurement {
     pub value: f64,
 }
 
-impl Measurement {
-    pub fn format_f64(&self) -> impl Fn(f64) -> String {
-        self.unit.format_f64()
-    }
-}
-
-impl Unit {
-    pub fn format_f64(self) -> impl Fn(f64) -> String {
-        match self {
-            Unit::BitsPerSecond => format_bits_per_second,
-            Unit::Percent => format_percent,
-            Unit::Seconds => format_seconds,
-            Unit::Count => format_count,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -185,18 +168,6 @@ impl Unit {
             Self::Count => "count",
         }
     }
-}
-
-fn format_percent(value: f64) -> String {
-    format!("{value:.2}%")
-}
-
-fn format_seconds(value: f64) -> String {
-    format!("{value:.2} s")
-}
-
-fn format_count(value: f64) -> String {
-    format!("{value:.0}")
 }
 
 pub mod iperf {
@@ -278,24 +249,6 @@ pub mod iperf {
             })
         }
     }
-}
-
-fn format_bits_per_second(bps: f64) -> String {
-    let bps = bps.abs();
-
-    let one_gbps = 1_000_000_000.0;
-    let one_mbps = 1_000_000.0;
-    let one_kbps = 1_000.0;
-
-    let (suffix, value) = if bps >= one_gbps {
-        ("Gbps", bps / one_gbps)
-    } else if bps >= one_mbps {
-        ("Mbps", bps / one_mbps)
-    } else {
-        ("Kbps", bps / one_kbps)
-    };
-
-    format!("{value:.2} {suffix}")
 }
 
 #[cfg(test)]

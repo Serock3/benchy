@@ -1,11 +1,8 @@
 [workspace]
 members = [
     "benchy-cli",
-    "benchy-gui",
     "benchy-lib",
     "benchy-runner",
-    "benchy-serve",
-    "benchy-store",
 ]
 resolver = "3"
 

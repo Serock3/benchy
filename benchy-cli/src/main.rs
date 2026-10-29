@@ -1,13 +1,6 @@
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{collections::BTreeSet, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
-use benchy_lib::Benchmark;
-use benchy_store::Store;
 use cargo_metadata::{MetadataCommand, Package};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
@@ -32,22 +25,6 @@ enum Commands {
         benchmarks: String,
         #[arg(long, default_value = "benchmark-results")]
         result_dir: PathBuf,
-    },
-    /// Add result JSON documents to a persistent SQLite database.
-    Ingest {
-        #[arg(long)]
-        database: PathBuf,
-        #[arg(long, default_value = "benchmark-results")]
-        result_dir: PathBuf,
-    },
-    /// Show the newest runs stored in a SQLite database.
-    Inspect {
-        #[arg(long)]
-        database: PathBuf,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -75,78 +52,7 @@ fn main() -> Result<()> {
             benchmarks,
             result_dir,
         } => run(manifest_path, &benchmarks, result_dir),
-        Commands::Ingest {
-            database,
-            result_dir,
-        } => ingest(&database, &result_dir),
-        Commands::Inspect {
-            database,
-            limit,
-            json,
-        } => inspect(&database, limit, json),
     }
-}
-
-fn inspect(database: &Path, limit: usize, json: bool) -> Result<()> {
-    if limit == 0 {
-        bail!("--limit must be greater than zero");
-    }
-    let store = Store::open_read_only(database)?;
-    let runs = store.latest_runs(limit)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&runs)?);
-    } else if runs.is_empty() {
-        println!("No benchmark runs stored in {}", database.display());
-    } else {
-        for run in runs {
-            let commit = run.commit.chars().take(12).collect::<String>();
-            println!(
-                "#{}  {}  {:7}  {}/{}  {}  {}  {} measurement(s)",
-                run.id,
-                run.date.to_rfc3339(),
-                run.status.as_str(),
-                run.group.repository,
-                run.group.name,
-                run.branch,
-                commit,
-                run.measurement_count,
-            );
-        }
-    }
-    Ok(())
-}
-
-fn ingest(database: &Path, result_dir: &Path) -> Result<()> {
-    let mut paths = fs::read_dir(result_dir)
-        .with_context(|| format!("failed to read {}", result_dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    paths.retain(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "json")
-    });
-    paths.sort();
-
-    let benchmarks = paths
-        .iter()
-        .map(|path| {
-            let bytes = fs::read(path)
-                .with_context(|| format!("failed to read result {}", path.display()))?;
-            serde_json::from_slice::<Benchmark>(&bytes)
-                .with_context(|| format!("invalid benchmark result {}", path.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut store = Store::open(database)?;
-    let report = store.ingest(&benchmarks)?;
-    println!(
-        "Stored {} benchmark result(s) in {} ({} inserted, {} updated)",
-        report.total(),
-        database.display(),
-        report.inserted,
-        report.updated
-    );
-    Ok(())
 }
 
 fn run(manifest_path: PathBuf, selection: &str, result_dir: PathBuf) -> Result<()> {

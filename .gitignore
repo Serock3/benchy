@@ -1,3 +1,4 @@
 /target/
 /benchmark-results/
+# Ignore local build output from the retired frontend.
 /benchy-gui/dist/
