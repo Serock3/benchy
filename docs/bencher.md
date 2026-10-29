@@ -169,14 +169,20 @@ use Bencher branch `pr/<number>` and the PR head SHA, with the target branch and
 start point. The start point is reset for each run so a rebased PR does not keep using an older
 baseline. Pushes to `main` establish baseline history using the same testbed.
 
-The publishing script declares percentage-based thresholds for both measures: throughput alerts
-when it drops more than 10% below the historical mean, and CPU usage alerts when it rises more
-than 25% above it. Calibrated against the observed run-to-run spread (about 3% for throughput
-and up to 11% for the smallest CPU metric), they are intended to catch real regressions without
-firing on noise. `bencher run` creates these thresholds for each run's branch and testbed, with a
-minimum sample size of one while history is sparse. Alerts currently appear in the check and PR
-comment; the publishing workflow is not failed on alert, so a red check still requires human
-judgement rather than certifying the absence of a performance regression.
+The publisher configures percentage-based regression thresholds for the measures in each report:
+
+| Measurement | Alert condition relative to the historical mean |
+| --- | --- |
+| Sender and receiver throughput | More than 5% lower |
+| Target process CPU (`cpu.*`, excluding `cpu.iperf.*`) | More than 10% higher |
+| iperf CPU, UDP loss, jitter, and other diagnostics | Recorded without automatic thresholds |
+
+Each threshold uses up to 30 prior samples and requires at least one. A first baseline report
+therefore records values without evaluating a regression. These initial tolerances should be
+revisited after observing run-to-run noise; they are relative changes, not confidence levels or
+CPU percentage-point changes. See [Bencher's percentage test](https://bencher.dev/docs/explanation/thresholds/#percentage).
+The publishing workflow itself succeeds when results are uploaded successfully; Bencher's
+separate GitHub check fails when a regression alert is generated, and its PR comment shows alerts.
 
 The publisher passes `--github-actions` and the explicit `--ci-number` for PR comments. Bencher
 also reads `GITHUB_SHA` to place GitHub checks; the script overrides it for the Bencher subprocess

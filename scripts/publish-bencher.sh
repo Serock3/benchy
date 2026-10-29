@@ -37,6 +37,7 @@ jq -e --slurpfile definitions "$definitions_file" \
 jq -e 'all(.[]; (.name | type == "string" and length > 0) and
   (.units | type == "string" and length > 0))' "$definitions_file" > /dev/null
 
+threshold_args=()
 while IFS= read -r slug; do
   name=$(jq -er --arg slug "$slug" '.[$slug].name' "$definitions_file")
   units=$(jq -er --arg slug "$slug" '.[$slug].units' "$definitions_file")
@@ -57,24 +58,33 @@ while IFS= read -r slug; do
     bencher measure create "$BENCHER_PROJECT" --name "$name" --slug "$slug" \
       --units "$units" --attempts 3 > /dev/null
   fi
+
+  # Percentage tests work from one prior sample while the new series builds history.
+  # Keep iperf's own CPU diagnostic: it changes with the traffic it generates.
+  lower=_
+  upper=_
+  case "$slug" in
+    throughput-*)
+      if [[ "$units" == 'Gb/s' ]]; then lower=0.05; fi
+      ;;
+    cpu-iperf-*) ;;
+    cpu-*)
+      if [[ "$units" == '% of one logical CPU' ]]; then upper=0.10; fi
+      ;;
+  esac
+  if [[ "$lower" != _ || "$upper" != _ ]]; then
+    threshold_args+=(--threshold-measure "$slug" --threshold-test percentage
+      --threshold-min-sample-size 1 --threshold-max-sample-size 30
+      --threshold-lower-boundary "$lower" --threshold-upper-boundary "$upper")
+  fi
 done < <(jq -r 'keys[]' "$definitions_file")
 
-# Percentage-based regression thresholds, created for each run's branch and testbed.
-# Throughput alerts on drops and CPU usage on increases; the observed run-to-run noise
-# is roughly 3% for throughput and up to ~11% for the smallest CPU metric, so these
-# boundaries leave a comfortable margin. History is sparse while the project is young,
-# so the minimum sample size is 1; revisit both once a real history accumulates.
+# --github-actions makes the Bencher check fail on regression alerts. Keep successful
+# publication successful so its report and workflow summary remain available on alerts.
 bencher run --project "$BENCHER_PROJECT" \
   --branch "$tested_branch" --hash "$GITHUB_SHA" \
   --testbed "$BENCHER_TESTBED" --adapter json --file "$metrics_file" \
-  --threshold-measure gigabits-per-second --threshold-test percentage \
-  --threshold-min-sample-size 1 --threshold-max-sample-size 64 \
-  --threshold-lower-boundary 0.10 --threshold-upper-boundary _ \
-  --threshold-measure percent --threshold-test percentage \
-  --threshold-min-sample-size 1 --threshold-max-sample-size 64 \
-  --threshold-lower-boundary _ --threshold-upper-boundary 0.25 \
-  --thresholds-reset \
-  --format json --quiet --attempts 3 "${report_args[@]}" > "$report_file"
+  --format json --quiet --attempts 3 "${report_args[@]}" "${threshold_args[@]}" > "$report_file"
 
 report_id=$(jq -er '.uuid' "$report_file")
 project_slug=$(jq -er '.project.slug' "$report_file")

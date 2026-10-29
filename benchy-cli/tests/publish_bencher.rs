@@ -135,6 +135,45 @@ fn definitions_must_match_the_published_measures() {
 }
 
 #[test]
+fn thresholds_detect_throughput_drops_and_target_cpu_increases_only() {
+    let mut publisher = Publisher::new("missing");
+    let mut metrics: serde_json::Value =
+        serde_json::from_str(&publisher.read("metrics.json")).unwrap();
+    let mut measures: serde_json::Value =
+        serde_json::from_str(&publisher.read("measures.json")).unwrap();
+    for (slug, name, units) in [
+        (
+            "cpu-iperf-down",
+            "DOWN iperf CPU (logical CPU %)",
+            "% of one logical CPU",
+        ),
+        ("udp-lost-percent", "UDP packet loss (%)", "%"),
+        ("udp-jitter", "UDP jitter (s)", "s"),
+    ] {
+        metrics["gotatun-throughput"][slug] = serde_json::json!({"value": 1.0});
+        measures[slug] = serde_json::json!({"name": name, "units": units});
+    }
+    fs::write(
+        publisher.temp.path().join("metrics.json"),
+        serde_json::to_vec(&metrics).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        publisher.temp.path().join("measures.json"),
+        serde_json::to_vec(&measures).unwrap(),
+    )
+    .unwrap();
+    let output = publisher.command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let calls = publisher.read("calls.log");
+    assert!(calls.contains("--threshold-measure throughput-receiver --threshold-test percentage --threshold-min-sample-size 1 --threshold-max-sample-size 30 --threshold-lower-boundary 0.05 --threshold-upper-boundary _"));
+    assert!(calls.contains("--threshold-measure cpu-gotatun-up --threshold-test percentage --threshold-min-sample-size 1 --threshold-max-sample-size 30 --threshold-lower-boundary _ --threshold-upper-boundary 0.10"));
+    assert!(!calls.contains("--threshold-measure cpu-iperf"));
+    assert!(!calls.contains("--threshold-measure udp-"));
+    assert_eq!(calls.matches("--threshold-measure").count(), 2);
+}
+
+#[test]
 fn missing_credentials_fail_before_calling_bencher() {
     let mut publisher = Publisher::new("existing");
     publisher.command.env_remove("BENCHER_API_KEY");
