@@ -211,6 +211,7 @@ fn pr_reporting_uses_tested_head_and_base_instead_of_publisher_commit() {
     let calls = publisher.read("calls.log");
     assert!(calls.contains(&format!("--branch pr/7 --hash {sha}")));
     assert!(calls.contains("--github-actions github-test-token"));
+    assert!(calls.contains("--ci-only-thresholds"));
     assert!(calls.contains("--ci-number 7 --start-point main"));
     assert!(calls.contains(&format!("--start-point-hash {base} --start-point-reset")));
 }

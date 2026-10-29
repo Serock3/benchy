@@ -16,7 +16,7 @@ export GITHUB_SHA=${BENCHY_SOURCE_SHA:-$GITHUB_SHA}
 tested_branch=${BENCHY_SOURCE_BRANCH:-$GITHUB_REF_NAME}
 report_args=()
 if [[ -n "${BENCHY_GITHUB_TOKEN:-}" ]]; then
-  report_args+=(--github-actions "$BENCHY_GITHUB_TOKEN")
+  report_args+=(--github-actions "$BENCHY_GITHUB_TOKEN" --ci-only-thresholds)
 fi
 if [[ -n "${BENCHY_PR_NUMBER:-}" ]]; then
   : "${BENCHY_GITHUB_TOKEN:?Missing GitHub reporting token}"

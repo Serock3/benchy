@@ -183,6 +183,8 @@ revisited after observing run-to-run noise; they are relative changes, not confi
 CPU percentage-point changes. See [Bencher's percentage test](https://bencher.dev/docs/explanation/thresholds/#percentage).
 The publishing workflow itself succeeds when results are uploaded successfully; Bencher's
 separate GitHub check fails when a regression alert is generated, and its PR comment shows alerts.
+`--ci-only-thresholds` keeps informational measures out of the PR comment and avoids missing-
+threshold warnings there. All measures remain stored in the full Bencher report.
 
 The publisher passes `--github-actions` and the explicit `--ci-number` for PR comments. Bencher
 also reads `GITHUB_SHA` to place GitHub checks; the script overrides it for the Bencher subprocess
