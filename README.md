@@ -130,4 +130,7 @@ Runtime configuration is supplied through `BENCHY_PEER`, `BENCHY_ALICE_ADDRESS`,
 `BENCHY_BOB_ADDRESS` repository variables. WireGuard key material is generated for each run.
 
 During initial development the product workflow follows `Serock3/benchy@main`. Pin it to an
-immutable commit before using the workflow from the production repositories.
+immutable commit before using the workflow from the production repositories. Also pass that
+commit as the `framework-ref` input: pinning the reusable workflow alone does not pin the code
+checked out to build the controller. This is useful for stability experiments too. Publication
+continues to use trusted Benchy `main` independently of the tested source run.

@@ -13,6 +13,11 @@ on:
         required: false
         default: benchmarks/Cargo.toml
         type: string
+      framework-ref:
+        description: Benchy revision to build; pin alongside this workflow for reproducible runs
+        required: false
+        default: main
+        type: string
       runner-labels:
         description: JSON array of labels identifying the benchmark controller
         required: false
@@ -42,6 +47,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: Serock3/benchy
+          ref: ${{ inputs.framework-ref }}
           path: benchy
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
