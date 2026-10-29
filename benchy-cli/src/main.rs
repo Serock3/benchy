@@ -5,6 +5,8 @@ use cargo_metadata::{MetadataCommand, Package};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
+mod bencher;
+
 #[derive(Parser)]
 #[command(version, about = "Run repository-local system benchmarks")]
 struct Cli {
@@ -25,6 +27,14 @@ enum Commands {
         benchmarks: String,
         #[arg(long, default_value = "benchmark-results")]
         result_dir: PathBuf,
+    },
+    /// Convert a successful workflow attempt's result files to Bencher Metric Format.
+    ExportBencher {
+        #[arg(long, default_value = "benchmark-results")]
+        result_dir: PathBuf,
+        /// Write to this file instead of stdout. Keep it outside the input directory.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -52,6 +62,9 @@ fn main() -> Result<()> {
             benchmarks,
             result_dir,
         } => run(manifest_path, &benchmarks, result_dir),
+        Commands::ExportBencher { result_dir, output } => {
+            bencher::export(&result_dir, output.as_deref())
+        }
     }
 }
 

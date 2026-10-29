@@ -23,8 +23,9 @@ The per-run JSON files use the versioned result schema documented in
 and printed verbatim in the workflow run summary for quick inspection. Alice runs benchmarks and
 writes result files; there is no persistent results database or web service to deploy there.
 
-Bencher Cloud will provide metric history, plots, and GitHub reporting. The converter and publisher
-are the next implementation step; the current workflow only uploads raw JSON artifacts.
+Bencher Cloud will provide metric history, plots, and GitHub reporting. `benchy-cli export-bencher`
+converts result files to Bencher Metric Format (BMF); the publisher is the next implementation
+step. The current workflow only uploads raw JSON artifacts.
 
 ## Local layout
 
@@ -77,7 +78,9 @@ need migration. Keep raw artifacts for debugging and retrying publication; GitHu
 retention is finite, so they are not a permanent archive.
 
 See Bencher's [custom benchmark guide](https://bencher.dev/docs/how-to/track-custom-benchmarks/)
-and [GitHub Actions guide](https://bencher.dev/docs/how-to/github-actions/).
+and [GitHub Actions guide](https://bencher.dev/docs/how-to/github-actions/). The local conversion
+command, measure mapping, and planned publishing job are documented in
+[`docs/bencher.md`](docs/bencher.md).
 
 ## Future profiling
 

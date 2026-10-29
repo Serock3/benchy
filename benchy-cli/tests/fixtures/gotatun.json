@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "repository": "gotatun",
+  "name": "gotatun-throughput",
+  "commit": "abc123",
+  "branch": "main",
+  "commit_message": "Measure throughput",
+  "description": "GotaTun tunnel throughput measured with iperf3",
+  "date": "2026-09-25T12:00:00Z",
+  "measurements": {
+    "cpu.gotatun.up": {
+      "label": "UP GotaTun CPU",
+      "unit": "percent",
+      "value": 282.1
+    },
+    "throughput.receiver": {
+      "label": "Receiver throughput",
+      "unit": "bits_per_second",
+      "value": 2730000000.0
+    }
+  },
+  "run_id": "123456",
+  "status": "success",
+  "parameters": {
+    "duration_seconds": "30",
+    "mtu": "1440"
+  },
+  "environment": {
+    "GITHUB_RUN_ATTEMPT": "1",
+    "RUNNER_NAME": "benchy-alice"
+  }
+}
