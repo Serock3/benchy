@@ -111,9 +111,19 @@ operations. Bob needs the runtime tools and an SSH account reachable from Alice.
 transport is SSH; it can later be replaced by a dedicated peer agent without changing benchmark
 discovery or workflow triggers.
 
-Only one Actions runner should have the `benchy` label. `benchy-runner` also acquires
-`/tmp/benchy.lock`, preventing two new-framework runs from using Alice and Bob simultaneously. The
-legacy shell runner does not acquire this lock and must be disabled during smoke tests.
+For the Alice/Bob pair, use one organization-level Actions runner with the `benchy` label.
+The pilot organization is `serock3-bench`, with the `gotatun` and `mullvadvpn-app` forks. Its
+default runner group allows these two selected repositories and explicitly permits public
+repositories. Both workflows use the same runner; GitHub queues their jobs while it is busy,
+serializing builds as well as measurements. Publishing runs separately on GitHub-hosted runners.
+
+Alice's runner service is installed in `~/actions-runner-benchy`. From that directory, use
+`sudo ./svc.sh status`, `sudo ./svc.sh stop`, or `sudo ./svc.sh start` to manage it. It is enabled
+to start on boot. The old repository-level runner services are retired.
+
+`benchy-runner` also acquires `/tmp/benchy.lock`, preventing overlapping benchmark execution
+outside the shared Actions queue. The legacy shell runner does not acquire this lock and must
+remain stopped while Actions benchmarks run.
 
 Runtime configuration is supplied through `BENCHY_PEER`, `BENCHY_ALICE_ADDRESS`, and
 `BENCHY_BOB_ADDRESS` repository variables. WireGuard key material is generated for each run.
