@@ -6,10 +6,10 @@ case "$1 $2" in
     case "$MOCK_MODE" in
       api-failure) echo 'API unavailable' >&2; exit 1 ;;
       missing) echo '[]' ;;
-      wrong-units) echo '[{"slug":"gigabits-per-second","units":"Gb/s"},{"slug":"percent","units":"cores"}]' ;;
-      wrong-throughput-units) echo '[{"slug":"gigabits-per-second","units":"bits/s"},{"slug":"percent","units":"%"}]' ;;
+      wrong-units) echo '[{"slug":"cpu-gotatun-up","units":"cores"}]' ;;
+      wrong-throughput-units) echo '[{"slug":"throughput-receiver","units":"bits/s"},{"slug":"cpu-gotatun-up","name":"UP GotaTun CPU (logical CPU %)","units":"% of one logical CPU"}]' ;;
       legacy-units) echo '[{"slug":"bits-per-second","units":"bits/s"},{"slug":"percent","units":"%"}]' ;;
-      *) echo '[{"slug":"gigabits-per-second","units":"Gb/s"},{"slug":"percent","units":"%"}]' ;;
+      *) echo '[{"slug":"throughput-receiver","name":"Receiver throughput (Gb/s)","units":"Gb/s"},{"slug":"cpu-gotatun-up","name":"UP GotaTun CPU (logical CPU %)","units":"% of one logical CPU"}]' ;;
     esac
     ;;
   'measure create') echo '{}' ;;

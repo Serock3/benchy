@@ -75,6 +75,7 @@ jobs:
         run: |
           cargo run --locked --manifest-path benchy/Cargo.toml --package benchy-cli -- \
             export-bencher --result-dir raw-results --output bencher-results/metrics.json \
+            --measures-output bencher-results/measures.json \
             --publication-context bencher-results/context.json
       - name: Install Bencher CLI
         if: ${{ steps.context.outputs.publish == 'true' }}
@@ -92,7 +93,7 @@ jobs:
           BENCHY_BASE_BRANCH: ${{ steps.context.outputs.base-branch }}
           BENCHY_BASE_SHA: ${{ steps.context.outputs.base-sha }}
           BENCHY_GITHUB_TOKEN: ${{ github.token }}
-        run: bash benchy/scripts/publish-bencher.sh bencher-results/metrics.json bencher-results/report.json
+        run: bash benchy/scripts/publish-bencher.sh bencher-results/metrics.json bencher-results/report.json bencher-results/measures.json
       - name: Upload publishing diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

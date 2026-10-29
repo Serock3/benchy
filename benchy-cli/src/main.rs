@@ -36,6 +36,9 @@ enum Commands {
         /// Write to this file instead of stdout. Keep it outside the input directory.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Write custom measure names and units for the publisher, outside the input directory.
+        #[arg(long)]
+        measures_output: Option<PathBuf>,
         /// Validate the results against trusted metadata resolved by prepare-publication.
         #[arg(long)]
         publication_context: Option<PathBuf>,
@@ -82,10 +85,12 @@ fn main() -> Result<()> {
         Commands::ExportBencher {
             result_dir,
             output,
+            measures_output,
             publication_context,
         } => bencher::export(
             &result_dir,
             output.as_deref(),
+            measures_output.as_deref(),
             publication_context.as_deref(),
         ),
         Commands::PreparePublication {

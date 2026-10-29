@@ -16,9 +16,19 @@ impl Publisher {
         fs::write(&mock, include_str!("fixtures/bencher-mock.sh")).unwrap();
         fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
         let metrics = temp.path().join("metrics.json");
-        fs::write(&metrics, r#"{
-          "gotatun/gotatun-throughput/throughput.receiver": {"gigabits-per-second": {"value": 2.671151827}},
-          "gotatun/gotatun-throughput/cpu.gotatun.up": {"percent": {"value": 277.7}}
+        fs::write(
+            &metrics,
+            r#"{
+          "gotatun-throughput": {
+            "throughput-receiver": {"value": 2.671151827},
+            "cpu-gotatun-up": {"value": 277.7}
+          }
+        }"#,
+        )
+        .unwrap();
+        fs::write(temp.path().join("measures.json"), r#"{
+          "throughput-receiver": {"name": "Receiver throughput (Gb/s)", "units": "Gb/s"},
+          "cpu-gotatun-up": {"name": "UP GotaTun CPU (logical CPU %)", "units": "% of one logical CPU"}
         }"#).unwrap();
         let script =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/publish-bencher.sh");
@@ -27,6 +37,7 @@ impl Publisher {
             .arg(script)
             .arg(metrics)
             .arg(temp.path().join("report.json"))
+            .arg(temp.path().join("measures.json"))
             .env(
                 "PATH",
                 format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
@@ -80,8 +91,12 @@ fn creates_only_missing_measures_used_by_the_report() {
     let output = publisher.command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let calls = publisher.read("calls.log");
-    assert!(calls.contains("--slug gigabits-per-second --units Gb/s"));
-    assert!(calls.contains("--slug percent --units %"));
+    assert!(
+        calls.contains("--name Receiver throughput (Gb/s) --slug throughput-receiver --units Gb/s")
+    );
+    assert!(calls.contains(
+        "--name UP GotaTun CPU (logical CPU %) --slug cpu-gotatun-up --units % of one logical CPU"
+    ));
     assert!(!calls.contains("--slug seconds"));
     assert!(!calls.contains("--slug count"));
 }
@@ -98,14 +113,25 @@ fn unit_mismatches_and_api_failures_do_not_publish_a_report() {
 }
 
 #[test]
-fn creates_gigabit_measure_without_relabelling_existing_bit_measure() {
+fn creates_grouped_measures_without_relabelling_legacy_measures() {
     let mut publisher = Publisher::new("legacy-units");
     let output = publisher.command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let calls = publisher.read("calls.log");
-    assert!(calls.contains("--slug gigabits-per-second --units Gb/s"));
+    assert!(calls.contains("--slug throughput-receiver --units Gb/s"));
+    assert!(calls.contains("--slug cpu-gotatun-up --units % of one logical CPU"));
     assert!(!calls.contains("--slug bits-per-second"));
+    assert!(!calls.contains("--slug percent"));
     assert!(!calls.contains("measure update"));
+}
+
+#[test]
+fn definitions_must_match_the_published_measures() {
+    let mut publisher = Publisher::new("existing");
+    fs::write(publisher.temp.path().join("measures.json"), "{}").unwrap();
+    let output = publisher.command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(publisher.read("calls.log").is_empty());
 }
 
 #[test]

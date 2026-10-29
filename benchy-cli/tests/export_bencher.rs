@@ -16,25 +16,37 @@ fn exports_result_files_to_stdout_or_a_separate_file() {
     assert!(stdout.status.success(), "{:?}", stdout);
     let metrics: Value = serde_json::from_slice(&stdout.stdout).unwrap();
     assert_eq!(
-        metrics["gotatun/gotatun-throughput/cpu.gotatun.up"]["percent"]["value"],
+        metrics["gotatun-throughput"]["cpu-gotatun-up"]["value"],
         json!(282.1)
     );
     assert_eq!(
-        metrics["gotatun/gotatun-throughput/throughput.receiver"]["gigabits-per-second"]["value"],
+        metrics["gotatun-throughput"]["throughput-receiver"]["value"],
         json!(2.73)
     );
-    assert_eq!(metrics.as_object().unwrap().len(), 2);
+    assert_eq!(metrics.as_object().unwrap().len(), 1);
+    assert_eq!(metrics["gotatun-throughput"].as_object().unwrap().len(), 2);
 
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("bencher.json");
+    let measures = temp.path().join("measures.json");
     let result = exporter(&fixtures)
         .arg("--output")
         .arg(&output)
+        .arg("--measures-output")
+        .arg(&measures)
         .output()
         .unwrap();
     assert!(result.status.success(), "{:?}", result);
     assert!(result.stdout.is_empty());
     assert_eq!(fs::read(output).unwrap(), stdout.stdout);
+    let definitions: Value = serde_json::from_slice(&fs::read(measures).unwrap()).unwrap();
+    assert_eq!(
+        definitions,
+        json!({
+            "cpu-gotatun-up": {"name": "UP GotaTun CPU (logical CPU %)", "units": "% of one logical CPU"},
+            "throughput-receiver": {"name": "Receiver throughput (Gb/s)", "units": "Gb/s"}
+        })
+    );
 }
 
 #[test]

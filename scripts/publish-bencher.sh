@@ -28,13 +28,18 @@ fi
 
 metrics_file=${1:?Expected metrics JSON path}
 report_file=${2:?Expected report JSON path}
+definitions_file=${3:?Expected measure definitions JSON path}
 
-# BMF has no unit metadata. Create only measures used in this report, and refuse to
-# silently relabel existing historical data if the configured units do not match.
-while read -r slug units; do
-  if ! jq -e --arg slug "$slug" 'any(.[]; has($slug))' "$metrics_file" > /dev/null; then
-    continue
-  fi
+# BMF has no display names or units. The trusted converter supplies definitions,
+# keyed by stable metric IDs, separately from values. Validate the complete set first.
+jq -e --slurpfile definitions "$definitions_file" \
+  '([.[] | keys[]] | unique) == ($definitions[0] | keys)' "$metrics_file" > /dev/null
+jq -e 'all(.[]; (.name | type == "string" and length > 0) and
+  (.units | type == "string" and length > 0))' "$definitions_file" > /dev/null
+
+while IFS= read -r slug; do
+  name=$(jq -er --arg slug "$slug" '.[$slug].name' "$definitions_file")
+  units=$(jq -er --arg slug "$slug" '.[$slug].units' "$definitions_file")
   measures=$(bencher measure list "$BENCHER_PROJECT" --search "$slug" --per-page 255 --attempts 3)
   if jq -e --arg slug "$slug" 'any(.[]; .slug == $slug)' <<< "$measures" > /dev/null; then
     if ! jq -e --arg slug "$slug" --arg units "$units" \
@@ -42,16 +47,17 @@ while read -r slug units; do
       echo "Bencher measure '$slug' has unexpected units; expected '$units'" >&2
       exit 1
     fi
+    # Project keys cannot rename existing measures. A display-label change can be
+    # applied in Bencher with a user key; the stable slug preserves the series.
+    if ! jq -e --arg slug "$slug" --arg name "$name" \
+      'all(.[] | select(.slug == $slug); .name == $name)' <<< "$measures" > /dev/null; then
+      printf "Bencher measure '%s' has a different display name; expected '%s'\n" "$slug" "$name" >&2
+    fi
   else
-    bencher measure create "$BENCHER_PROJECT" --name "$slug" --slug "$slug" \
+    bencher measure create "$BENCHER_PROJECT" --name "$name" --slug "$slug" \
       --units "$units" --attempts 3 > /dev/null
   fi
-done <<'MEASURES'
-gigabits-per-second Gb/s
-percent %
-seconds s
-count count
-MEASURES
+done < <(jq -r 'keys[]' "$definitions_file")
 
 # Percentage-based regression thresholds, created for each run's branch and testbed.
 # Throughput alerts on drops and CPU usage on increases; the observed run-to-run noise

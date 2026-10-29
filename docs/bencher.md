@@ -7,18 +7,24 @@ From the Benchy checkout:
 ```console
 cargo run --locked --package benchy-cli -- export-bencher \
   --result-dir /path/to/downloaded/raw-results \
-  --output /path/to/bencher.json
+  --output /path/to/bencher.json \
+  --measures-output /path/to/measures.json
 ```
 
-Omit `--output` to print JSON to stdout. Keep the output outside the input directory. The
+Omit `--output` to print BMF JSON to stdout. `--measures-output` writes the custom measure
+definitions needed by the publisher; it can be omitted for a standalone BMF export. Keep both
+outputs outside the input directory and use different files. The
 converter reads the directory's top-level `.json` files in sorted order and requires schema v1.
 It rejects failed results, empty inputs or measurement sets, non-finite values, duplicate metric
 identities, and files from different repositories, revisions, branches, or workflow attempts.
 Validation errors do not produce a partial export or truncate an existing output file.
 
-Each Benchy measurement becomes a Bencher benchmark named
-`<repository>/<benchmark-name>/<measurement-id>`. Display labels are excluded from the identity
-so changing a label does not split the historical series. Throughput is converted from raw bits/s
+Each Benchy benchmark becomes one Bencher benchmark named `<benchmark-name>`, with all its
+measurements grouped underneath. The repository is already identified by the Bencher project.
+Each metric ID becomes a measure slug by replacing dots and underscores with hyphens, e.g.
+`cpu.gotatun.down` becomes `cpu-gotatun-down`. Colliding slugs and conflicting definitions for a
+shared measure are rejected. Display labels are excluded from identities, so changing a label
+does not split the historical series. Throughput is converted from raw bits/s
 to decimal Gb/s by dividing by 1,000,000,000. CPU percentages stay unchanged and may exceed 100
 (100% represents one logical CPU). The raw result schema and values remain unchanged.
 
@@ -26,33 +32,57 @@ For example:
 
 ```json
 {
-  "gotatun/gotatun-throughput/cpu.gotatun.up": {
-    "percent": { "value": 282.1 }
-  },
-  "gotatun/gotatun-throughput/throughput.receiver": {
-    "gigabits-per-second": { "value": 2.73 }
+  "gotatun-throughput": {
+    "cpu-gotatun-up": { "value": 282.1 },
+    "throughput-receiver": { "value": 2.73 }
   }
 }
 ```
 
-These custom measures keep the units explicit. Bencher's built-in `throughput` is operations/s
-and `latency` is nanoseconds, so neither is used for our measurements.
+The corresponding measure definitions are:
 
-| Benchy unit | Bencher measure slug | Bencher measure units |
+```json
+{
+  "cpu-gotatun-up": {
+    "name": "UP GotaTun CPU (logical CPU %)",
+    "units": "% of one logical CPU"
+  },
+  "throughput-receiver": {
+    "name": "Receiver throughput (Gb/s)",
+    "units": "Gb/s"
+  }
+}
+```
+
+The complete GotaTun benchmark has six measures: sender and receiver throughput, UP and DOWN
+GotaTun CPU, and UP and DOWN iperf CPU. They belong to one benchmark; none are averaged or
+discarded. These custom measures keep the units explicit. Bencher's built-in `throughput` is
+operations/s and `latency` is nanoseconds, so neither is used for our measurements.
+
+| Benchy unit | Measure name suffix | Bencher measure units |
 | --- | --- | --- |
-| `bits_per_second` | `gigabits-per-second` | `Gb/s` |
-| `percent` | `percent` | `%` |
-| `seconds` | `seconds` | `s` |
-| `count` | `count` | `count` |
+| `bits_per_second` | `(Gb/s)` | `Gb/s` |
+| `percent` with a `cpu.*` metric ID | `(logical CPU %)` | `% of one logical CPU` |
+| Other `percent`, e.g. UDP packet loss | `(%)` | `%` |
+| `seconds` | `(s)` | `s` |
+| `count` | `(count)` | `count` |
 
-The initial test reports used the `bits-per-second` measure with `bits/s` units. New reports use
-`gigabits-per-second`; the older measure and its values are left intact. Relabelling those older
-values as Gb/s would make them incorrect by a factor of one billion.
+Names use the raw measurement's label followed by the suffix above; the earlier CPU suffix
+`(% of one logical CPU)` is replaced rather than duplicated. Bencher limits measure names and
+slugs to 64 characters. Labels and units for a shared metric ID must agree across benchmarks.
+
+Earlier reports used a separate benchmark per metric, with generic `bits-per-second`,
+`gigabits-per-second`, and `percent` measures. Those reports remain intact. The grouped format
+starts new series, so publish a main-branch baseline before comparing PR results in this format.
+Raw artifacts from old runs can be converted again with the new exporter without rerunning the
+benchmarks. Do not relabel the original bits/s values as Gb/s.
 
 The publisher creates any missing measures used by the report and verifies that existing ones
 have the listed units. A mismatch fails publication without changing historical definitions.
-BMF contains metric values and measure identifiers, but no unit metadata, so these definitions
-are configured explicitly before uploading.
+An existing display-name mismatch produces a diagnostic; project keys cannot rename measures,
+so apply later name changes in Bencher with a user key. BMF contains metric values and measure
+identifiers, but no display names or unit metadata, so definitions from `--measures-output` are
+configured explicitly before uploading. The definitions must exactly match the measures in BMF.
 
 The BMF file contains only metrics. Preserve the raw JSON artifact for source metadata,
 parameters, environment, labels, and failures. Pass the tested revision and branch explicitly to
@@ -133,7 +163,8 @@ as JSON only. No commands, workflow files, or scripts from the artifact are exec
 
 ## Reporting and baseline
 
-`scripts/publish-bencher.sh` verifies the measures and submits the converted metrics. PR reports
+`scripts/publish-bencher.sh METRICS_JSON REPORT_JSON MEASURES_JSON` verifies the measures and
+submits the converted metrics. PR reports
 use Bencher branch `pr/<number>` and the PR head SHA, with the target branch and base SHA as the
 start point. The start point is reset for each run so a rebased PR does not keep using an older
 baseline. Pushes to `main` establish baseline history using the same testbed.
