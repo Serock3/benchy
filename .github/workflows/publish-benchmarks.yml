@@ -13,6 +13,11 @@ on:
         required: false
         default: alice-bob-v1
         type: string
+      threshold-policy:
+        description: JSON percentage-threshold policy from the trusted caller; empty uses defaults
+        required: false
+        default: ''
+        type: string
       source-workflow-path:
         description: Only accept completed runs from this product workflow
         required: false
@@ -87,6 +92,7 @@ jobs:
           BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
           BENCHER_PROJECT: ${{ inputs.bencher-project }}
           BENCHER_TESTBED: ${{ inputs.bencher-testbed }}
+          BENCHY_THRESHOLD_POLICY: ${{ inputs.threshold-policy }}
           BENCHY_SOURCE_SHA: ${{ steps.context.outputs.source-sha }}
           BENCHY_SOURCE_BRANCH: ${{ steps.context.outputs.source-branch }}
           BENCHY_PR_NUMBER: ${{ steps.context.outputs.pr-number }}

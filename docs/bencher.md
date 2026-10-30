@@ -89,6 +89,32 @@ parameters, environment, labels, and failures. Pass the tested revision and bran
 to Benchy's revision. Parameter changes that affect comparability require a different benchmark
 identity or Bencher testbed.
 
+## Per-project thresholds
+
+The trusted product `Publish benchmarks` workflow can pass a `threshold-policy` JSON input:
+
+```yaml
+with:
+  bencher-project: gotatun-test
+  threshold-policy: >-
+    {"minimum_samples":5,"maximum_samples":10,"measures":{
+      "throughput-network":{"lower":0.07},"cpu-gotatun":{"upper":0.10},
+      "time":{"upper":0.15},"allocated":{"upper":0.05}}}
+```
+
+This compares each result to the historical mean using percentage boundaries. It requires at
+least five historical metrics and uses at most ten. `lower: 0.07` alerts on a drop over 7%;
+`upper: 0.15` alerts on an increase over 15%. These are tolerances, not significance levels.
+Keep policy in the trusted publishing caller, never in a PR's result artifact. Invalid policy
+fails before API writes. Empty policy preserves the framework defaults for existing callers.
+Only measures present in a report are configured, so selected benchmark runs remain supported.
+Omitting a previously configured measure does not delete its existing model; remove that model
+explicitly in Bencher if it should no longer gate results.
+
+Timing and allocation thresholds suit fixed hotpath workloads. iperf CPU is diagnostic: it
+changes with traffic volume and is not independently gated. Whole-process GotaTun CPU also
+varies with throughput, so interpret a CPU alert alongside the throughput result.
+
 ## Throughput uncertainty
 
 The default is one complete 30-second transfer. Sender and receiver throughput may carry an
@@ -97,8 +123,9 @@ in the raw measurement's unit. The estimate is `s / sqrt(n)`, where `s` is the s
 deviation of interval rates (N−1 denominator). It estimates uncertainty in the transfer's average;
 it is not the interval SD itself or an observed SD across complete runs.
 
-Benchmarks explicitly request one-second iperf reports, a JSON server, and `--get-server-output`.
-Sender intervals supply sender uncertainty; receiver intervals supply receiver uncertainty.
+GotaTun uses Alice's local one-second iperf reports in either direction; it does not request
+Bob's JSON output. Benchmarks measuring both endpoints can request a JSON server and
+`--get-server-output` to obtain intervals for the other side.
 Omitted warmup intervals and short final fragments (less than 0.9 seconds) are excluded.
 Missing intervals or fewer than two usable intervals produce no uncertainty, rather than zero.
 The whole-transfer throughput value stays as reported in iperf's final summary.
@@ -142,8 +169,7 @@ empirical across-run SD; their already-published historical bounds remain unchan
 
 ## PR runs and approval
 
-GotaTun's `Benchmarks` workflow runs on pushes to `main`; the app's runs nightly on `main` at
-01:17 UTC. Both run for PRs targeting `main` and support manual dispatch with a benchmark
+GotaTun's `Benchmarks` workflow runs on pushes and nightly on `main` at 01:17 UTC; the app's also runs nightly on `main`. Both run for PRs targeting `main` and support manual dispatch with a benchmark
 selection. They call `run-benchmarks.yml` with read-only repository
 permissions and no secrets. PRs check out the head repository and exact head SHA. The workflow
 sets `BENCHY_SOURCE_SHA` and `BENCHY_SOURCE_BRANCH=pr/<number>` so the raw results identify that

@@ -249,3 +249,36 @@ fn shared_directional_measures_keep_target_cpu_thresholds_only() {
     assert!(!calls.contains("--threshold-measure cpu-iperf"));
     assert_eq!(calls.matches("--threshold-measure").count(), 2);
 }
+
+#[test]
+fn trusted_policy_overrides_boundaries_and_history_window() {
+    let mut publisher = Publisher::new("missing");
+    publisher.command.env(
+        "BENCHY_THRESHOLD_POLICY",
+        r#"{
+        "minimum_samples":5,"maximum_samples":10,
+        "measures":{"throughput-receiver":{"lower":0.07},"cpu-gotatun-up":{"upper":0.12}}
+    }"#,
+    );
+    let output = publisher.command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let calls = publisher.read("calls.log");
+    assert!(calls.contains("--threshold-measure throughput-receiver --threshold-test percentage --threshold-min-sample-size 5 --threshold-max-sample-size 10 --threshold-lower-boundary 0.07 --threshold-upper-boundary _"));
+    assert!(calls.contains("--threshold-measure cpu-gotatun-up --threshold-test percentage --threshold-min-sample-size 5 --threshold-max-sample-size 10 --threshold-lower-boundary _ --threshold-upper-boundary 0.12"));
+}
+
+#[test]
+fn malformed_policies_fail_before_any_api_calls() {
+    for policy in [
+        "not json",
+        r#"{"minimum_samples":5,"maximum_samples":2,"measures":{}}"#,
+        r#"{"minimum_samples":5,"maximum_samples":10,"measures":{"time":{"upper":-0.1}}}"#,
+        r#"{"minimum_samples":5,"maximum_samples":10,"measures":{"time":{"uppper":0.1}}}"#,
+    ] {
+        let mut publisher = Publisher::new("missing");
+        publisher.command.env("BENCHY_THRESHOLD_POLICY", policy);
+        let output = publisher.command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(publisher.read("calls.log").is_empty());
+    }
+}
