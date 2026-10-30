@@ -64,10 +64,10 @@ while IFS= read -r slug; do
   lower=_
   upper=_
   case "$slug" in
-    throughput-*)
+    throughput|throughput-*)
       if [[ "$units" == 'Gb/s' ]]; then lower=0.05; fi
       ;;
-    cpu-iperf-*) ;;
+    cpu-iperf|cpu-iperf-*) ;;
     cpu-*)
       if [[ "$units" == '% of one logical CPU' ]]; then upper=0.10; fi
       ;;

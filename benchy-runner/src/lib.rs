@@ -94,6 +94,7 @@ impl Recorder {
                 description: definition.description.to_owned(),
                 date: Utc::now(),
                 measurements: BTreeMap::new(),
+                cases: BTreeMap::new(),
                 run_id: env::var("GITHUB_RUN_ID").ok(),
                 status: BenchmarkStatus::Success,
                 error: None,
@@ -153,6 +154,30 @@ impl Recorder {
         self.record(id, label, unit, value, None)
     }
 
+    /// Record a shared measure under a named sub-benchmark, e.g. one profiled function.
+    pub fn case_measurement(
+        &mut self,
+        case: &str,
+        definition: MeasurementDefinition,
+        value: f64,
+    ) -> Result<()> {
+        ensure!(!case.trim().is_empty(), "benchmark case must have a name");
+        let (id, measurement) = checked_measurement(
+            definition.id,
+            definition.label,
+            definition.unit,
+            value,
+            None,
+        )?;
+        let measurements = self.benchmark.cases.entry(case.to_owned()).or_default();
+        ensure!(
+            !measurements.contains_key(&id),
+            "duplicate case measure {case}/{id}"
+        );
+        measurements.insert(id, measurement);
+        Ok(())
+    }
+
     fn record(
         &mut self,
         id: &str,
@@ -161,29 +186,12 @@ impl Recorder {
         value: f64,
         uncertainty: Option<Uncertainty>,
     ) -> Result<()> {
-        let id = MetricId::new(id)?;
-        if label.trim().is_empty() {
-            bail!("metric {id} has an empty display label");
-        }
-        if !value.is_finite() {
-            bail!("metric {id} has a non-finite value");
-        }
+        let (id, measurement) = checked_measurement(id, label, unit, value, uncertainty)?;
         ensure!(
-            uncertainty.as_ref().is_none_or(Uncertainty::is_valid),
-            "metric {id} has invalid uncertainty"
+            !self.benchmark.measurements.contains_key(&id),
+            "metric {id} was recorded more than once"
         );
-        if self.benchmark.measurements.contains_key(&id) {
-            bail!("metric {id} was recorded more than once");
-        }
-        self.benchmark.measurements.insert(
-            id,
-            Measurement {
-                label: label.to_owned(),
-                unit,
-                value,
-                uncertainty,
-            },
-        );
+        self.benchmark.measurements.insert(id, measurement);
         Ok(())
     }
 
@@ -213,6 +221,34 @@ impl Recorder {
 /// Estimate s/sqrt(n), assuming independent interval rates and negligible run-level effects.
 /// Benchmarks request one-second reports; short final fragments and omitted warmup intervals
 /// are excluded. An unavailable side or fewer than two usable intervals yields no bounds.
+fn checked_measurement(
+    id: &str,
+    label: &str,
+    unit: Unit,
+    value: f64,
+    uncertainty: Option<Uncertainty>,
+) -> Result<(MetricId, Measurement)> {
+    let id = MetricId::new(id)?;
+    ensure!(
+        !label.trim().is_empty(),
+        "metric {id} has an empty display label"
+    );
+    ensure!(value.is_finite(), "metric {id} has a non-finite value");
+    ensure!(
+        uncertainty.as_ref().is_none_or(Uncertainty::is_valid),
+        "metric {id} has invalid uncertainty"
+    );
+    Ok((
+        id,
+        Measurement {
+            label: label.to_owned(),
+            unit,
+            value,
+            uncertainty,
+        },
+    ))
+}
+
 pub fn throughput_uncertainty(
     output: &iperf::IntervalOutput,
     sender: bool,

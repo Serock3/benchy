@@ -50,6 +50,9 @@ pub struct Benchmark {
     pub description: String,
     pub date: DateTime<Utc>,
     pub measurements: BTreeMap<MetricId, Measurement>,
+    /// Named sub-benchmarks sharing the result's source identity and parameters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cases: BTreeMap<String, BTreeMap<MetricId, Measurement>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     pub status: BenchmarkStatus,
@@ -340,6 +343,7 @@ mod tests {
                     uncertainty: None,
                 },
             )]),
+            cases: BTreeMap::new(),
             run_id: Some("123456".to_owned()),
             status: BenchmarkStatus::Success,
             error: None,

@@ -96,6 +96,17 @@ variation. Absence means no estimate is available; it does not mean zero variati
 optional, additive v1 field. Existing results without it remain valid. Currently only iperf
 throughput records it; CPU, UDP jitter, packet loss, and profiling measurements do not.
 
+## Named cases
+
+A result may also contain an optional `cases` map. Each entry is a named sub-benchmark with
+its own measurement map; source identity, parameters and environment belong to the parent run.
+For example, a profiler can report `cases.encrypt.time` and `cases.decrypt.time`, sharing the
+same `time` measure definition. Bencher names these `<name>/encrypt` and `<name>/decrypt`.
+The parent's `measurements` map can be empty when cases are present. Case names must be
+nonempty, resulting benchmark names must be unique, and labels/units for shared IDs must agree.
+Repeated runs must have identical case and measurement sets. Results without cases retain their
+existing meaning; this is an additive v1 extension.
+
 ## Parameters and environment
 
 `parameters` contains benchmark-controlled inputs that can affect comparability. `environment`

@@ -229,10 +229,12 @@ fn aggregate_samples(samples: &[Vec<Benchmark>]) -> Result<Export> {
                 same_run(first, benchmark) && first.parameters == benchmark.parameters,
                 "samples have different source identities or benchmark parameters"
             );
+        }
+    }
+    for converted in &exports {
+        for (name, values) in &export.metrics {
             ensure!(
-                converted.metrics[&benchmark.group.name]
-                    .keys()
-                    .eq(export.metrics[&benchmark.group.name].keys()),
+                values.keys().eq(converted.metrics[name].keys()),
                 "samples have different measurement sets"
             );
         }
@@ -303,75 +305,94 @@ fn convert(benchmarks: &[Benchmark]) -> Result<Export> {
             "result files must belong to the same repository, commit, branch, and workflow attempt"
         );
         ensure!(
-            !benchmark.measurements.is_empty(),
+            !benchmark.measurements.is_empty() || !benchmark.cases.is_empty(),
             "benchmark {}/{} has no measurements",
             group.repository,
             group.name
         );
-        let name = &group.name;
         ensure!(
-            name.chars().count() <= 1024,
-            "Bencher benchmark name exceeds 1024 characters: {name}"
+            benchmark.cases.keys().all(|case| !case.trim().is_empty()),
+            "benchmark case must have a name"
         );
-        let mut values = BTreeMap::new();
-        for (id, measurement) in &benchmark.measurements {
-            ensure!(
-                measurement.value.is_finite(),
-                "measurement {name}/{id} has a non-finite value"
+        let groups = std::iter::once((group.name.clone(), &benchmark.measurements))
+            .filter(|(_, measurements)| !measurements.is_empty())
+            .chain(
+                benchmark
+                    .cases
+                    .iter()
+                    .map(|(case, measurements)| (format!("{}/{case}", group.name), measurements)),
             );
-            let slug = id.as_str().replace(['.', '_'], "-");
+        for (name, measurements) in groups {
             ensure!(
-                slug.len() <= 64,
-                "Bencher measure slug exceeds 64 characters: {slug}"
+                !measurements.is_empty(),
+                "benchmark case {name} has no measurements"
             );
-            if let Some(previous) = measure_ids.insert(slug.clone(), id) {
+            ensure!(!name.ends_with('/'), "benchmark case must have a name");
+            ensure!(
+                name.chars().count() <= 1024,
+                "Bencher benchmark name exceeds 1024 characters: {name}"
+            );
+            let mut values = BTreeMap::new();
+            for (id, measurement) in measurements {
                 ensure!(
-                    previous == id,
-                    "metric IDs collide on Bencher measure {slug}"
+                    measurement.value.is_finite(),
+                    "measurement {name}/{id} has a non-finite value"
                 );
-            }
-            let (definition, value) = convert_measurement(id.as_str(), measurement)?;
-            let error = measurement
-                .uncertainty
-                .as_ref()
-                .map(|uncertainty| {
+                let slug = id.as_str().replace(['.', '_'], "-");
+                ensure!(
+                    slug.len() <= 64,
+                    "Bencher measure slug exceeds 64 characters: {slug}"
+                );
+                if let Some(previous) = measure_ids.insert(slug.clone(), id) {
                     ensure!(
-                        uncertainty.is_valid(),
-                        "measurement {name}/{id} has invalid uncertainty"
+                        previous == id,
+                        "metric IDs collide on Bencher measure {slug}"
                     );
-                    let divisor = if measurement.unit == Unit::BitsPerSecond {
-                        1_000_000_000.0
-                    } else {
-                        1.0
-                    };
-                    Ok(uncertainty.standard_error / divisor)
-                })
-                .transpose()?;
-            let lower_value = error.map(|error| value - error);
-            let upper_value = error.map(|error| value + error);
-            ensure!(
-                lower_value.is_none_or(f64::is_finite) && upper_value.is_none_or(f64::is_finite),
-                "measurement {name}/{id} has non-finite bounds"
-            );
-            if let Some(previous) = measures.insert(slug.clone(), definition) {
+                }
+                let (definition, value) = convert_measurement(id.as_str(), measurement)?;
+                let error = measurement
+                    .uncertainty
+                    .as_ref()
+                    .map(|uncertainty| {
+                        ensure!(
+                            uncertainty.is_valid(),
+                            "measurement {name}/{id} has invalid uncertainty"
+                        );
+                        let divisor = if measurement.unit == Unit::BitsPerSecond {
+                            1_000_000_000.0
+                        } else {
+                            1.0
+                        };
+                        Ok(uncertainty.standard_error / divisor)
+                    })
+                    .transpose()?;
+                let lower_value = error.map(|error| value - error);
+                let upper_value = error.map(|error| value + error);
                 ensure!(
-                    previous == measures[&slug],
-                    "conflicting names or units for Bencher measure {slug}"
+                    lower_value.is_none_or(f64::is_finite)
+                        && upper_value.is_none_or(f64::is_finite),
+                    "measurement {name}/{id} has non-finite bounds"
+                );
+                if let Some(previous) = measures.insert(slug.clone(), definition) {
+                    ensure!(
+                        previous == measures[&slug],
+                        "conflicting names or units for Bencher measure {slug}"
+                    );
+                }
+                values.insert(
+                    slug,
+                    Metric {
+                        value,
+                        lower_value,
+                        upper_value,
+                    },
                 );
             }
-            values.insert(
-                slug,
-                Metric {
-                    value,
-                    lower_value,
-                    upper_value,
-                },
+            ensure!(
+                metrics.insert(name.clone(), values).is_none(),
+                "duplicate benchmark: {name}"
             );
         }
-        ensure!(
-            metrics.insert(name.clone(), values).is_none(),
-            "duplicate benchmark: {name}"
-        );
     }
     Ok(Export { metrics, measures })
 }
@@ -456,6 +477,50 @@ mod tests {
             .unwrap()
             .uncertainty = None;
         assert!(aggregate_samples(&missing).unwrap().metrics["gotatun-throughput"]["throughput-receiver"].lower_value.is_none());
+    }
+
+    #[test]
+    fn cases_share_measures_and_validate_repeated_case_sets() {
+        let mut first = fixture();
+        first.measurements.clear();
+        let measurement = Measurement {
+            label: "Time per call".into(),
+            unit: Unit::Nanoseconds,
+            value: 100.0,
+            uncertainty: None,
+        };
+        for case in ["encrypt", "decrypt"] {
+            first.cases.insert(
+                case.into(),
+                BTreeMap::from([(
+                    benchy_lib::MetricId::new("time").unwrap(),
+                    measurement.clone(),
+                )]),
+            );
+        }
+        let export = convert(&[first.clone()]).unwrap();
+        assert_eq!(export.measures.len(), 1);
+        assert_eq!(
+            export.metrics["gotatun-throughput/encrypt"]["time"].value,
+            100.0
+        );
+        let mut second = first.clone();
+        second
+            .cases
+            .get_mut("encrypt")
+            .unwrap()
+            .get_mut("time")
+            .unwrap()
+            .value = 200.0;
+        let aggregate = aggregate_samples(&[vec![first.clone()], vec![second.clone()]]).unwrap();
+        assert_eq!(
+            aggregate.metrics["gotatun-throughput/encrypt"]["time"].value,
+            150.0
+        );
+        second.cases.remove("decrypt");
+        assert!(aggregate_samples(&[vec![first.clone()], vec![second]]).is_err());
+        first.cases.insert(" ".into(), BTreeMap::new());
+        assert!(convert(&[first]).is_err());
     }
 
     #[test]

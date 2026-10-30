@@ -19,8 +19,8 @@ It rejects failed results, empty inputs or measurement sets, non-finite values, 
 identities, and files from different repositories, revisions, branches, or workflow attempts.
 Validation errors do not produce a partial export or truncate an existing output file.
 
-Each Benchy benchmark becomes one Bencher benchmark named `<benchmark-name>`, with all its
-measurements grouped underneath. The repository is already identified by the Bencher project.
+Each flat Benchy result becomes one Bencher benchmark named `<benchmark-name>`. Named
+`cases` become `<benchmark-name>/<case>`, with shared measurements underneath. The repository is already identified by the Bencher project.
 Each metric ID becomes a measure slug by replacing dots and underscores with hyphens, e.g.
 `cpu.gotatun.down` becomes `cpu-gotatun-down`. Colliding slugs and conflicting definitions for a
 shared measure are rejected. Display labels are excluded from identities, so changing a label
@@ -28,36 +28,33 @@ does not split the historical series. Throughput is converted from raw bits/s
 to decimal Gb/s by dividing by 1,000,000,000. CPU percentages stay unchanged and may exceed 100
 (100% represents one logical CPU). The raw result schema and values remain unchanged.
 
-For example:
+For example, GotaTun measures Alice in both network directions:
 
 ```json
 {
-  "gotatun-throughput": {
-    "cpu-gotatun-up": { "value": 282.1 },
-    "throughput-receiver": { "value": 2.73 }
-  }
-}
-```
-
-The corresponding measure definitions are:
-
-```json
-{
-  "cpu-gotatun-up": {
-    "name": "UP GotaTun CPU (logical CPU %)",
-    "units": "% of one logical CPU"
+  "gotatun-download": {
+    "throughput-network": { "value": 2.73 },
+    "cpu-gotatun": { "value": 375.0 },
+    "cpu-iperf": { "value": 75.0 }
   },
-  "throughput-receiver": {
-    "name": "Receiver throughput (Gb/s)",
-    "units": "Gb/s"
+  "gotatun-upload": {
+    "throughput-network": { "value": 2.85 },
+    "cpu-gotatun": { "value": 280.0 },
+    "cpu-iperf": { "value": 6.0 }
+  },
+  "gotatun-hotpath/format_packet_data": {
+    "time": { "value": 800.0 },
+    "allocated": { "value": 1252.0 }
   }
 }
 ```
 
-The complete GotaTun benchmark has six measures: sender and receiver throughput, UP and DOWN
-GotaTun CPU, and UP and DOWN iperf CPU. They belong to one benchmark; none are discarded.
-These custom measures keep the units explicit. Bencher's built-in `throughput` is
-operations/s and `latency` is nanoseconds, so neither is used for our measurements.
+The directional benchmarks share three custom measures: `Throughput (Gb/s)`,
+`GotaTun CPU (logical CPU %)`, and `iperf CPU (logical CPU %)`. Hotpath function cases share
+`Time per call (ns)` and `Allocated per call (B)`; lock cases share `Lock wait (ns)` and
+`Lock hold (ns)`. Workload/function identity belongs in the benchmark, so the plot can compare
+many benchmarks against one measure. `throughput-network` avoids Bencher's built-in
+`throughput` measure, which means operations/s.
 
 | Benchy unit | Measure name suffix | Bencher measure units |
 | --- | --- | --- |

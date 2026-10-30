@@ -224,3 +224,28 @@ fn pr_reporting_requires_github_credentials_before_publishing() {
     assert!(!output.status.success());
     assert!(publisher.read("calls.log").is_empty());
 }
+
+#[test]
+fn shared_directional_measures_keep_target_cpu_thresholds_only() {
+    let mut publisher = Publisher::new("missing");
+    fs::write(publisher.temp.path().join("metrics.json"), r#"{
+        "gotatun-download": {"throughput-network":{"value":2.7},"cpu-gotatun":{"value":375},"cpu-iperf":{"value":75}},
+        "gotatun-upload": {"throughput-network":{"value":2.8},"cpu-gotatun":{"value":280},"cpu-iperf":{"value":6}}
+    }"#).unwrap();
+    fs::write(
+        publisher.temp.path().join("measures.json"),
+        r#"{
+        "throughput-network":{"name":"Throughput (Gb/s)","units":"Gb/s"},
+        "cpu-gotatun":{"name":"GotaTun CPU (logical CPU %)","units":"% of one logical CPU"},
+        "cpu-iperf":{"name":"iperf CPU (logical CPU %)","units":"% of one logical CPU"}
+    }"#,
+    )
+    .unwrap();
+    let output = publisher.command.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let calls = publisher.read("calls.log");
+    assert!(calls.contains("--threshold-measure throughput-network"));
+    assert!(calls.contains("--threshold-measure cpu-gotatun"));
+    assert!(!calls.contains("--threshold-measure cpu-iperf"));
+    assert_eq!(calls.matches("--threshold-measure").count(), 2);
+}

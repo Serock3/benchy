@@ -1,61 +1,22 @@
-//! Converts hotpath-rs profiling reports into benchmark measurements.
-//!
-//! A benchmark host that runs hotpath-instrumented code writes a JSON report at the end of its
-//! process. [`record_hotpath_report`] turns the per-function timings and lock statistics of that
-//! report into measurements so data-path costs are tracked and plotted alongside the benchmark's
-//! own metrics.
-//!
-//! Recorded metrics, all with an optional host segment prepended (`hotpath.<host>....`):
-//!
-//! - `hotpath.<path>.time` - a measured function's average time per call, in nanoseconds.
-//!   Nanoseconds keep per-call values readable in Bencher instead of rounding to a fraction of a
-//!   microsecond shown as seconds.
-//! - `hotpath.lock.<name>.wait` / `hotpath.lock.<name>.hold` - a lock's average wait time before
-//!   acquisition and average hold time, in nanoseconds. hotpath reports one entry per lock
-//!   *instance*; instances of one creation site are merged so the metric tracks the site.
-//! - `hotpath.<path>.alloc` - exclusive allocated bytes per call. Requires an
-//!   allocation-enabled workload with `hotpath::CountingAllocator` installed.
-//!
-//! Timings are inclusive of nested calls; allocations are exclusive. Lock wait in a serial
-//! workload measures uncontended acquisition, not contention. Keep the raw report for call
-//! counts and profiling settings. Rust paths map `::` to `.` in metric IDs.
-
+//! Convert hotpath reports into named function/lock cases with shared measures.
+//! Function timings are inclusive; allocation bytes are exclusive. Serial lock waits
+//! measure uncontended acquisition. Full names, counts and settings stay in the raw profile.
+use crate::{MeasurementDefinition, Recorder};
+use anyhow::{Context, Result, ensure};
+use benchy_lib::Unit;
+use hotpath::json::JsonReport;
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result, ensure};
-use benchy_lib::{MetricId, Unit};
-use hotpath::json::JsonReport;
-
-use crate::Recorder;
-
-/// Bencher limits measure slugs to 64 characters, and export-bencher derives the slug from the
-/// metric ID one character for one, so the ID itself must fit.
-const MAX_METRIC_ID_LEN: usize = 64;
-
-const METRIC_PREFIX: &str = "hotpath";
-
-/// Parses a hotpath-rs JSON report such as the one written at process exit.
 pub fn parse_hotpath_report(bytes: &[u8]) -> Result<JsonReport> {
     serde_json::from_slice(bytes).context("failed to deserialize a hotpath JSON report")
 }
 
-/// Records the average time per call of every measured function in one host's hotpath-rs JSON
-/// report. `host` optionally prefixes the metric IDs, e.g. to keep two benchmark machines'
-/// reports apart; `None` records unprefixed metrics.
 pub fn record_hotpath_report(
     recorder: &mut Recorder,
     host: Option<&str>,
-    report_bytes: &[u8],
+    bytes: &[u8],
 ) -> Result<()> {
-    let report = parse_hotpath_report(report_bytes)?;
-    record_hotpath_measurements(recorder, host, &report)
-}
-
-fn record_hotpath_measurements(
-    recorder: &mut Recorder,
-    host: Option<&str>,
-    report: &JsonReport,
-) -> Result<()> {
+    let report = parse_hotpath_report(bytes)?;
     let timing = report
         .functions_timing
         .as_ref()
@@ -65,14 +26,16 @@ fn record_hotpath_measurements(
         if entry.calls == 0 || entry.name == timing.caller_name {
             continue;
         }
-        let path = entry.name.to_lowercase().replace("::", ".");
-        let total_ns = hotpath::parse_duration(&entry.total)
-            .with_context(|| format!("invalid total time {:?} for {}", entry.total, entry.name))?;
-        recorder.dynamic_measurement(
-            &metric_id(host, &path, "time")?,
-            &label(host, &entry.name, "time per call"),
-            Unit::Nanoseconds,
-            total_ns as f64 / entry.calls as f64,
+        let total =
+            hotpath::parse_duration(&entry.total).context("invalid hotpath timing total")?;
+        recorder.case_measurement(
+            &function_case(host, &entry.name),
+            MeasurementDefinition {
+                id: "time",
+                label: "Time per call",
+                unit: Unit::Nanoseconds,
+            },
+            total as f64 / entry.calls as f64,
         )?;
         measured += 1;
     }
@@ -85,75 +48,70 @@ fn record_hotpath_measurements(
             if entry.calls == 0 || entry.name == allocations.caller_name {
                 continue;
             }
-            let path = entry.name.to_lowercase().replace("::", ".");
-            let total = hotpath::parse_bytes(&entry.total).with_context(|| {
-                format!(
-                    "invalid allocation total {:?} for {}",
-                    entry.total, entry.name
-                )
-            })?;
-            recorder.dynamic_measurement(
-                &metric_id(host, &path, "alloc")?,
-                &label(host, &entry.name, "allocated per call"),
-                Unit::Bytes,
+            let total =
+                hotpath::parse_bytes(&entry.total).context("invalid hotpath allocation total")?;
+            recorder.case_measurement(
+                &function_case(host, &entry.name),
+                MeasurementDefinition {
+                    id: "allocated",
+                    label: "Allocated per call",
+                    unit: Unit::Bytes,
+                },
                 total as f64 / entry.calls as f64,
             )?;
         }
     }
-    record_locks(recorder, host, report)
-}
-
-/// Records lock wait and hold times. hotpath reports one entry per lock instance with suffixed
-/// labels (`name`, `name-2`, ...); instances created at one call site are merged into a single
-/// metric so the metric set stays stable across runs that create a different number of locks.
-fn record_locks(recorder: &mut Recorder, host: Option<&str>, report: &JsonReport) -> Result<()> {
-    let Some(mutexes) = &report.mutexes else {
+    let Some(mutexes) = report.mutexes else {
         return Ok(());
     };
-    struct Site {
-        name: String,
-        acquisitions: u64,
-        wait_ns: u128,
-        hold_ns: u128,
-    }
-    let mut sites: BTreeMap<&str, Site> = BTreeMap::new();
+    // Merge instances by creation site, weighting by acquisition count.
+    let mut sites = BTreeMap::new();
     for entry in &mutexes.data {
         if entry.count == 0 {
             continue;
         }
-        let site = sites.entry(entry.source.as_str()).or_insert_with(|| Site {
-            name: base_lock_name(&entry.label).to_owned(),
-            acquisitions: 0,
-            wait_ns: 0,
-            hold_ns: 0,
-        });
-        site.acquisitions += entry.count;
-        let wait = hotpath::parse_duration(&entry.wait_avg)
-            .with_context(|| format!("invalid lock wait for {}", entry.label))?;
-        let hold = hotpath::parse_duration(&entry.acquire_avg)
-            .with_context(|| format!("invalid lock hold for {}", entry.label))?;
-        site.wait_ns += wait as u128 * entry.count as u128;
-        site.hold_ns += hold as u128 * entry.count as u128;
+        let site = sites.entry(&entry.source).or_insert((
+            base_lock_name(&entry.label),
+            0_u64,
+            0_u128,
+            0_u128,
+        ));
+        site.1 += entry.count;
+        site.2 += hotpath::parse_duration(&entry.wait_avg).context("invalid lock wait")? as u128
+            * entry.count as u128;
+        site.3 += hotpath::parse_duration(&entry.acquire_avg).context("invalid lock hold")? as u128
+            * entry.count as u128;
     }
-    for site in sites.into_values() {
-        let acquisitions = site.acquisitions as f64;
-        recorder.dynamic_measurement(
-            &lock_metric_id(host, &site.name, "wait")?,
-            &lock_label(host, &site.name, "lock wait"),
-            Unit::Nanoseconds,
-            site.wait_ns as f64 / acquisitions,
+    for (name, count, wait, hold) in sites.into_values() {
+        let case = case_name(host, &format!("lock/{name}"));
+        recorder.case_measurement(
+            &case,
+            MeasurementDefinition {
+                id: "lock.wait",
+                label: "Lock wait",
+                unit: Unit::Nanoseconds,
+            },
+            wait as f64 / count as f64,
         )?;
-        recorder.dynamic_measurement(
-            &lock_metric_id(host, &site.name, "hold")?,
-            &lock_label(host, &site.name, "lock hold"),
-            Unit::Nanoseconds,
-            site.hold_ns as f64 / acquisitions,
+        recorder.case_measurement(
+            &case,
+            MeasurementDefinition {
+                id: "lock.hold",
+                label: "Lock hold",
+                unit: Unit::Nanoseconds,
+            },
+            hold as f64 / count as f64,
         )?;
     }
     Ok(())
 }
 
-/// Strips the instance suffix hotpath appends to per-instance labels: `counter-2` -> `counter`.
+fn function_case(host: Option<&str>, name: &str) -> String {
+    case_name(host, name.rsplit("::").next().unwrap_or(name))
+}
+fn case_name(host: Option<&str>, name: &str) -> String {
+    host.map_or_else(|| name.to_owned(), |host| format!("{host}/{name}"))
+}
 fn base_lock_name(label: &str) -> &str {
     match label.rsplit_once('-') {
         Some((base, digits))
@@ -165,81 +123,23 @@ fn base_lock_name(label: &str) -> &str {
     }
 }
 
-/// Builds the metric ID for one function: `hotpath.<host>.<path>.time`, or `hotpath.<path>.time`
-/// without a host.
-fn metric_id(host: Option<&str>, path: &str, kind: &str) -> Result<String> {
-    let id = match host {
-        Some(host) => format!("{METRIC_PREFIX}.{host}.{path}.{kind}"),
-        None => format!("{METRIC_PREFIX}.{path}.{kind}"),
-    };
-    ensure!(
-        id.len() <= MAX_METRIC_ID_LEN,
-        "metric ID {id} is {} characters long, over the {MAX_METRIC_ID_LEN}-character Bencher measure limit",
-        id.len()
-    );
-    MetricId::new(&id)
-        .with_context(|| format!("cannot represent hotpath function {path:?} as a metric ID"))
-        .map(|_| id)
-}
-
-/// Builds the metric ID for one lock: `hotpath.<host>.lock.<name>.<kind>`, or
-/// `hotpath.lock.<name>.<kind>` without a host.
-fn lock_metric_id(host: Option<&str>, name: &str, kind: &str) -> Result<String> {
-    let id = match host {
-        Some(host) => format!("{METRIC_PREFIX}.{host}.lock.{name}.{kind}"),
-        None => format!("{METRIC_PREFIX}.lock.{name}.{kind}"),
-    };
-    ensure!(
-        id.len() <= MAX_METRIC_ID_LEN,
-        "metric ID {id} is {} characters long, over the {MAX_METRIC_ID_LEN}-character Bencher measure limit",
-        id.len()
-    );
-    MetricId::new(&id)
-        .with_context(|| format!("cannot represent hotpath lock {name:?} as a metric ID"))
-        .map(|_| id)
-}
-
-/// Builds a human-facing label from the host and the function's short name, e.g.
-/// `alice format_packet_data time per call`. The export suffix (unit) and the 64-character
-/// Bencher measure name limit leave room for the full short name.
-fn label(host: Option<&str>, name: &str, what: &str) -> String {
-    let short = name.rsplit("::").next().unwrap_or(name);
-    match host {
-        Some(host) => format!("{host} {short} {what}"),
-        None => format!("{short} {what}"),
-    }
-}
-
-/// Builds a human-facing label for a lock metric, e.g. `receiving-key-counter lock wait`.
-fn lock_label(host: Option<&str>, name: &str, what: &str) -> String {
-    match host {
-        Some(host) => format!("{host} {name} {what}"),
-        None => format!("{name} {what}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use benchy_lib::MetricId;
-
     use super::*;
-    use crate::{BenchmarkDefinition, Recorder};
-
-    const DEFINITION: BenchmarkDefinition = BenchmarkDefinition {
-        repository: "gotatun",
-        name: "gotatun-hotpath",
-        description: "test",
-    };
-
+    use crate::BenchmarkDefinition;
     fn recorder() -> Recorder {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(Recorder::new(DEFINITION, "/dev/null"))
+            .block_on(Recorder::new(
+                BenchmarkDefinition {
+                    repository: "gotatun",
+                    name: "gotatun-hotpath",
+                    description: "test",
+                },
+                "/dev/null",
+            ))
     }
-
-    // A trimmed copy of a real report produced by hotpath 0.30.1. The alloc section is
-    // intentionally present: allocation counts must be retained.
     const REPORT: &str = r#"{
         "type": "hotpath_report",
         "version": "0.30.1",
@@ -346,134 +246,42 @@ mod tests {
             "included_count": 2
         }
     }"#;
-
     #[test]
-    fn records_average_time_per_call_in_nanoseconds() {
+    fn functions_share_time_and_allocation_measures() {
+        let mut recorder = recorder();
+        record_hotpath_report(&mut recorder, None, REPORT.as_bytes()).unwrap();
+        assert!(recorder.benchmark.measurements.is_empty());
+        let values = &recorder.benchmark.cases["format_packet_data"];
+        assert_eq!(values["time"].value, 1_000_000.0);
+        assert_eq!(values["time"].unit, Unit::Nanoseconds);
+        assert_eq!(values["allocated"].value, 100.0);
+        assert_eq!(values["allocated"].unit, Unit::Bytes);
+    }
+    #[test]
+    fn locks_are_weighted_across_instances() {
         let mut recorder = recorder();
         record_hotpath_report(&mut recorder, Some("alice"), REPORT.as_bytes()).unwrap();
-
-        let measurements = &recorder.benchmark.measurements;
-        assert_eq!(measurements.len(), 4);
-        let id =
-            MetricId::new("hotpath.alice.gotatun.noise.session.format_packet_data.time").unwrap();
-        let time = &measurements[&id];
-        assert_eq!(time.value, 1_000_000.0);
-        assert_eq!(time.unit, Unit::Nanoseconds);
-        assert_eq!(time.label, "alice format_packet_data time per call");
+        let values = &recorder.benchmark.cases["alice/lock/receiving-key-counter"];
+        assert_eq!(values["lock.wait"].value, 3.5);
+        assert_eq!(values["lock.hold"].value, 9.5);
     }
-
     #[test]
-    fn records_exclusive_allocated_bytes_per_call() {
-        let mut recorder = recorder();
-        record_hotpath_report(&mut recorder, None, REPORT.as_bytes()).unwrap();
-        let id = MetricId::new("hotpath.gotatun.noise.session.format_packet_data.alloc").unwrap();
-        let allocation = &recorder.benchmark.measurements[&id];
-        assert_eq!(allocation.value, 100.0);
-        assert_eq!(allocation.unit, Unit::Bytes);
-    }
-
-    #[test]
-    fn rejects_empty_or_invalid_measurements() {
+    fn rejects_empty_and_invalid_reports() {
         let mut recorder = recorder();
         assert!(record_hotpath_report(&mut recorder, None, b"{}").is_err());
-        let broken = REPORT.replace("10.00 ms", "invalid");
-        assert!(record_hotpath_report(&mut recorder, None, broken.as_bytes()).is_err());
-    }
-
-    #[test]
-    fn merges_lock_instances_by_creation_site() {
-        let mut recorder = recorder();
-        record_hotpath_report(&mut recorder, None, REPORT.as_bytes()).unwrap();
-
-        let measurements = &recorder.benchmark.measurements;
-        // Two lock instances of one site merge into one wait and one hold metric.
-        let wait =
-            &measurements[&MetricId::new("hotpath.lock.receiving-key-counter.wait").unwrap()];
-        assert_eq!(wait.value, 3.5);
-        assert_eq!(wait.unit, Unit::Nanoseconds);
-        assert_eq!(wait.label, "receiving-key-counter lock wait");
-        let hold =
-            &measurements[&MetricId::new("hotpath.lock.receiving-key-counter.hold").unwrap()];
-        assert_eq!(hold.value, 9.5);
-        assert_eq!(hold.label, "receiving-key-counter lock hold");
         assert!(
-            measurements
-                .get(&MetricId::new("hotpath.lock.receiving-key-counter-2.wait").unwrap())
-                .is_none()
+            record_hotpath_report(
+                &mut recorder,
+                None,
+                REPORT.replace("10.00 ms", "invalid").as_bytes()
+            )
+            .is_err()
         );
     }
-
     #[test]
-    fn host_prefix_is_optional() {
+    fn duplicate_short_function_names_fail_instead_of_merging() {
         let mut recorder = recorder();
         record_hotpath_report(&mut recorder, None, REPORT.as_bytes()).unwrap();
-
-        let measurements = &recorder.benchmark.measurements;
-        let id = MetricId::new("hotpath.gotatun.noise.session.format_packet_data.time").unwrap();
-        assert!(measurements.contains_key(&id));
-        assert_eq!(measurements[&id].label, "format_packet_data time per call");
-    }
-
-    #[test]
-    fn rejects_overlong_function_paths() {
-        // 51 characters plus prefix, host, and kind: over 64 after mapping.
-        let long = "gotatun.a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.verylongfunctionname";
-        let error = metric_id(Some("alice"), long, "time")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("Bencher measure limit"), "{error}");
-    }
-
-    #[test]
-    fn rejects_unrepresentable_function_names() {
-        let error = metric_id(Some("alice"), "gotatun.generic.<u8>.work", "time")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("cannot represent"), "{error}");
-    }
-
-    #[test]
-    fn parses_a_real_report_shape() {
-        let report = parse_hotpath_report(REPORT.as_bytes()).unwrap();
-        let timing = report.functions_timing.unwrap();
-        assert_eq!(timing.data.len(), 2);
-        assert_eq!(
-            timing.data[1].name,
-            "gotatun::noise::session::format_packet_data"
-        );
-    }
-
-    #[test]
-    fn labels_use_the_short_function_name() {
-        assert_eq!(
-            label(
-                Some("bob"),
-                "gotatun::noise::handle_incoming_packet",
-                "time per call"
-            ),
-            "bob handle_incoming_packet time per call"
-        );
-        assert_eq!(
-            label(
-                None,
-                "gotatun::noise::handle_incoming_packet",
-                "time per call"
-            ),
-            "handle_incoming_packet time per call"
-        );
-    }
-
-    #[test]
-    fn lock_names_strip_hotpath_instance_suffixes() {
-        assert_eq!(
-            base_lock_name("receiving-key-counter"),
-            "receiving-key-counter"
-        );
-        assert_eq!(
-            base_lock_name("receiving-key-counter-2"),
-            "receiving-key-counter"
-        );
-        // Only an all-digit suffix is an instance marker.
-        assert_eq!(base_lock_name("channel-v6"), "channel-v6");
+        assert!(record_hotpath_report(&mut recorder, None, REPORT.as_bytes()).is_err());
     }
 }
