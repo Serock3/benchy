@@ -102,15 +102,18 @@ and [GitHub Actions guide](https://bencher.dev/docs/how-to/github-actions/). The
 command, measure mapping, and publishing job are documented in
 [`docs/bencher.md`](docs/bencher.md).
 
-## Future profiling
+## Profiling
 
-Consider [Dial9](https://github.com/dial9-rs/dial9) and
-[hotpath-rs](https://github.com/pawurb/hotpath-rs) as possible profiling integrations. Profiling
-should be opt-in initially, since instrumentation may affect the benchmark measurements.
-Associate profile artifacts with the benchmark ID, commit, workflow run, parameters, and endpoint
-role so developers can find them alongside numeric results. Start with Actions artifacts and
-links from the workflow summary; evaluate longer-term storage and viewers when profiling is
-implemented. No profiler is currently integrated into Benchy.
+GotaTun defines a separate in-process [hotpath-rs](https://github.com/pawurb/hotpath-rs)
+benchmark for function timings, allocations, and lock diagnostics. Benchy converts its report
+into numeric measurements and retains the full report in the workflow artifact. These
+instrumented measurements are diagnostic; the network throughput benchmark runs without them.
+
+GotaTun also has a manual [Dial9](https://github.com/dial9-rs/dial9) workflow that records
+both transfer directions and uploads traces as Actions artifacts. See the product repository's
+`benchmarks/README.md` and `dial9/README.md` for workloads and interpretation. Profile artifacts
+should retain the benchmark ID, commit, workflow run, parameters, and endpoint role. Evaluate
+longer-term storage when artifact retention becomes a limitation.
 
 ## Controller prerequisites
 

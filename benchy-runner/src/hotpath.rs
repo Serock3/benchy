@@ -13,16 +13,12 @@
 //! - `hotpath.lock.<name>.wait` / `hotpath.lock.<name>.hold` - a lock's average wait time before
 //!   acquisition and average hold time, in nanoseconds. hotpath reports one entry per lock
 //!   *instance*; instances of one creation site are merged so the metric tracks the site.
-//! - Criterion benches profiled through hotpath's criterion adapter contribute their routine
-//!   timing under `hotpath.<criterion benchmark id>.time`, with the id taken from the report's
-//!   `user_metadata` (e.g. `blake2s_hash/blake2s_crate/32`).
+//! - `hotpath.<path>.alloc` - exclusive allocated bytes per call. Requires an
+//!   allocation-enabled workload with `hotpath::CountingAllocator` installed.
 //!
-//! Call counts and allocation bytes are deliberately not recorded: the call count is a constant
-//! of the workload definition, and an allocation-free data path only yields constant zeros. Rust
-//! paths keep their shape with `::` mapped to `.` - the schema-v1 metric ID grammar does not
-//! allow colons. Metric IDs must also fit the 64-character Bencher measure limit that
-//! `benchy-cli export-bencher` enforces, so an overlong or otherwise unrepresentable name fails
-//! the benchmark instead of silently dropping the function's metrics.
+//! Timings are inclusive of nested calls; allocations are exclusive. Lock wait in a serial
+//! workload measures uncontended acquisition, not contention. Keep the raw report for call
+//! counts and profiling settings. Rust paths map `::` to `.` in metric IDs.
 
 use std::collections::BTreeMap;
 
@@ -37,12 +33,6 @@ use crate::Recorder;
 const MAX_METRIC_ID_LEN: usize = 64;
 
 const METRIC_PREFIX: &str = "hotpath";
-
-/// The routine entry hotpath's criterion adapter reports for every routine execution.
-const CRITERION_ROUTINE: &str = "hotpath::criterion::routine";
-
-/// The `user_metadata` key carrying the profiled criterion benchmark's full id.
-const CRITERION_BENCHMARK_KEY: &str = "criterion_benchmark";
 
 /// Parses a hotpath-rs JSON report such as the one written at process exit.
 pub fn parse_hotpath_report(bytes: &[u8]) -> Result<JsonReport> {
@@ -66,50 +56,48 @@ fn record_hotpath_measurements(
     host: Option<&str>,
     report: &JsonReport,
 ) -> Result<()> {
-    let criterion_benchmark = report
-        .user_metadata
+    let timing = report
+        .functions_timing
         .as_ref()
-        .and_then(|metadata| metadata.get(CRITERION_BENCHMARK_KEY))
-        .cloned();
-    if let Some(timing) = &report.functions_timing {
-        for entry in &timing.data {
-            // The guard's wrapper (the caller that built the report) is not product code.
-            if entry.calls == 0 || entry.name == timing.caller_name {
+        .context("hotpath report has no function timings")?;
+    let mut measured = 0;
+    for entry in &timing.data {
+        if entry.calls == 0 || entry.name == timing.caller_name {
+            continue;
+        }
+        let path = entry.name.to_lowercase().replace("::", ".");
+        let total_ns = hotpath::parse_duration(&entry.total)
+            .with_context(|| format!("invalid total time {:?} for {}", entry.total, entry.name))?;
+        recorder.dynamic_measurement(
+            &metric_id(host, &path, "time")?,
+            &label(host, &entry.name, "time per call"),
+            Unit::Nanoseconds,
+            total_ns as f64 / entry.calls as f64,
+        )?;
+        measured += 1;
+    }
+    ensure!(
+        measured > 0,
+        "hotpath report contains no measured function calls"
+    );
+    if let Some(allocations) = &report.functions_alloc {
+        for entry in &allocations.data {
+            if entry.calls == 0 || entry.name == allocations.caller_name {
                 continue;
             }
-            let (path, label) = if entry.name == CRITERION_ROUTINE {
-                match &criterion_benchmark {
-                    Some(benchmark) => (
-                        criterion_path(benchmark),
-                        format!("{} time per call", benchmark.replace('/', " ")),
-                    ),
-                    None => (
-                        entry.name.to_lowercase().replace("::", "."),
-                        label(host, &entry.name, "time per call"),
-                    ),
-                }
-            } else {
-                (
-                    entry.name.to_lowercase().replace("::", "."),
-                    label(host, &entry.name, "time per call"),
+            let path = entry.name.to_lowercase().replace("::", ".");
+            let total = hotpath::parse_bytes(&entry.total).with_context(|| {
+                format!(
+                    "invalid allocation total {:?} for {}",
+                    entry.total, entry.name
                 )
-            };
-            match hotpath::parse_duration(&entry.total) {
-                Some(total_ns) => {
-                    recorder.dynamic_measurement(
-                        &metric_id(host, &path)?,
-                        &label,
-                        Unit::Nanoseconds,
-                        total_ns as f64 / entry.calls as f64,
-                    )?;
-                }
-                None => {
-                    eprintln!(
-                        "::warning::cannot parse total time {:?} of {}",
-                        entry.total, entry.name
-                    );
-                }
-            }
+            })?;
+            recorder.dynamic_measurement(
+                &metric_id(host, &path, "alloc")?,
+                &label(host, &entry.name, "allocated per call"),
+                Unit::Bytes,
+                total as f64 / entry.calls as f64,
+            )?;
         }
     }
     record_locks(recorder, host, report)
@@ -140,20 +128,12 @@ fn record_locks(recorder: &mut Recorder, host: Option<&str>, report: &JsonReport
             hold_ns: 0,
         });
         site.acquisitions += entry.count;
-        match hotpath::parse_duration(&entry.wait_avg) {
-            Some(wait_ns) => site.wait_ns += wait_ns as u128 * entry.count as u128,
-            None => eprintln!(
-                "::warning::cannot parse average wait time {:?} of lock {}",
-                entry.wait_avg, entry.label
-            ),
-        }
-        match hotpath::parse_duration(&entry.acquire_avg) {
-            Some(hold_ns) => site.hold_ns += hold_ns as u128 * entry.count as u128,
-            None => eprintln!(
-                "::warning::cannot parse average hold time {:?} of lock {}",
-                entry.acquire_avg, entry.label
-            ),
-        }
+        let wait = hotpath::parse_duration(&entry.wait_avg)
+            .with_context(|| format!("invalid lock wait for {}", entry.label))?;
+        let hold = hotpath::parse_duration(&entry.acquire_avg)
+            .with_context(|| format!("invalid lock hold for {}", entry.label))?;
+        site.wait_ns += wait as u128 * entry.count as u128;
+        site.hold_ns += hold as u128 * entry.count as u128;
     }
     for site in sites.into_values() {
         let acquisitions = site.acquisitions as f64;
@@ -185,31 +165,12 @@ fn base_lock_name(label: &str) -> &str {
     }
 }
 
-/// Maps a criterion benchmark id such as `blake2s_hash/blake2s_crate/32` onto metric ID
-/// segments. The grammar requires every segment to start with a lowercase letter, so purely
-/// numeric parameters gain an `n` prefix (`32` -> `n32`).
-fn criterion_path(benchmark: &str) -> String {
-    benchmark
-        .to_lowercase()
-        .replace('/', ".")
-        .split('.')
-        .map(|segment| {
-            if segment.starts_with(|byte: char| byte.is_ascii_digit()) {
-                format!("n{segment}")
-            } else {
-                segment.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
 /// Builds the metric ID for one function: `hotpath.<host>.<path>.time`, or `hotpath.<path>.time`
 /// without a host.
-fn metric_id(host: Option<&str>, path: &str) -> Result<String> {
+fn metric_id(host: Option<&str>, path: &str, kind: &str) -> Result<String> {
     let id = match host {
-        Some(host) => format!("{METRIC_PREFIX}.{host}.{path}.time"),
-        None => format!("{METRIC_PREFIX}.{path}.time"),
+        Some(host) => format!("{METRIC_PREFIX}.{host}.{path}.{kind}"),
+        None => format!("{METRIC_PREFIX}.{path}.{kind}"),
     };
     ensure!(
         id.len() <= MAX_METRIC_ID_LEN,
@@ -278,7 +239,7 @@ mod tests {
     }
 
     // A trimmed copy of a real report produced by hotpath 0.30.1. The alloc section is
-    // intentionally present: it must be ignored.
+    // intentionally present: allocation counts must be retained.
     const REPORT: &str = r#"{
         "type": "hotpath_report",
         "version": "0.30.1",
@@ -392,13 +353,31 @@ mod tests {
         record_hotpath_report(&mut recorder, Some("alice"), REPORT.as_bytes()).unwrap();
 
         let measurements = &recorder.benchmark.measurements;
-        assert_eq!(measurements.len(), 3);
+        assert_eq!(measurements.len(), 4);
         let id =
             MetricId::new("hotpath.alice.gotatun.noise.session.format_packet_data.time").unwrap();
         let time = &measurements[&id];
         assert_eq!(time.value, 1_000_000.0);
         assert_eq!(time.unit, Unit::Nanoseconds);
         assert_eq!(time.label, "alice format_packet_data time per call");
+    }
+
+    #[test]
+    fn records_exclusive_allocated_bytes_per_call() {
+        let mut recorder = recorder();
+        record_hotpath_report(&mut recorder, None, REPORT.as_bytes()).unwrap();
+        let id = MetricId::new("hotpath.gotatun.noise.session.format_packet_data.alloc").unwrap();
+        let allocation = &recorder.benchmark.measurements[&id];
+        assert_eq!(allocation.value, 100.0);
+        assert_eq!(allocation.unit, Unit::Bytes);
+    }
+
+    #[test]
+    fn rejects_empty_or_invalid_measurements() {
+        let mut recorder = recorder();
+        assert!(record_hotpath_report(&mut recorder, None, b"{}").is_err());
+        let broken = REPORT.replace("10.00 ms", "invalid");
+        assert!(record_hotpath_report(&mut recorder, None, broken.as_bytes()).is_err());
     }
 
     #[test]
@@ -435,99 +414,19 @@ mod tests {
         assert_eq!(measurements[&id].label, "format_packet_data time per call");
     }
 
-    // The shape hotpath's criterion adapter writes: one routine entry, the benchmark id in the
-    // report's user metadata, and the guard's wrapper as the section's caller name.
-    const CRITERION_REPORT: &str = r#"{
-        "type": "hotpath_report",
-        "version": "0.30.1",
-        "meta": {
-            "rustc": "1.95.0",
-            "os": "linux-x86_64",
-            "created_at": "2026-10-29T18:40:00Z",
-            "run": "native"
-        },
-        "user_metadata": {
-            "criterion_benchmark": "blake2s_hash/blake2s_crate/32",
-            "criterion_iterations": "1000"
-        },
-        "functions_timing": {
-            "profiling_mode": "timing",
-            "time_elapsed": "10.00 ms",
-            "total_elapsed_ns": 10000000,
-            "description": "Function execution time metrics.",
-            "caller_name": "hotpath::criterion::bench",
-            "percentiles": [95.0],
-            "data": [
-                {
-                    "id": 0,
-                    "name": "hotpath::criterion::bench",
-                    "calls": 1,
-                    "sampled_calls": 1,
-                    "avg": "10.00 ms",
-                    "p95": "10.00 ms",
-                    "total": "10.00 ms",
-                    "percent_total": "100.00%",
-                    "location": { "file": "src/main.rs", "line": 1, "column": 1 }
-                },
-                {
-                    "id": 1,
-                    "name": "hotpath::criterion::routine",
-                    "calls": 1000,
-                    "sampled_calls": 1000,
-                    "avg": "10.00 µs",
-                    "p95": "10.00 µs",
-                    "total": "10.00 ms",
-                    "percent_total": "100.00%",
-                    "location": { "file": "src/main.rs", "line": 8, "column": 4 }
-                }
-            ],
-            "total_count": 2,
-            "included_count": 2
-        }
-    }"#;
-
-    #[test]
-    fn records_criterion_routine_timings() {
-        let mut recorder = recorder();
-        record_hotpath_report(&mut recorder, None, CRITERION_REPORT.as_bytes()).unwrap();
-
-        let measurements = &recorder.benchmark.measurements;
-        assert_eq!(measurements.len(), 1);
-        let routine =
-            &measurements[&MetricId::new("hotpath.blake2s_hash.blake2s_crate.n32.time").unwrap()];
-        assert_eq!(routine.value, 10_000.0);
-        assert_eq!(routine.unit, Unit::Nanoseconds);
-        assert_eq!(routine.label, "blake2s_hash blake2s_crate 32 time per call");
-    }
-
-    #[test]
-    fn criterion_ids_map_onto_valid_metric_segments() {
-        assert_eq!(
-            criterion_path("blake2s_hash/blake2s_crate/32"),
-            "blake2s_hash.blake2s_crate.n32"
-        );
-        assert_eq!(
-            criterion_path("assemble_ipv4_fragment_interleaved/16x4000"),
-            "assemble_ipv4_fragment_interleaved.n16x4000"
-        );
-        // Not numeric: the segment keeps its shape.
-        assert_eq!(
-            criterion_path("chacha20poly1305/ring/1400"),
-            "chacha20poly1305.ring.n1400"
-        );
-    }
-
     #[test]
     fn rejects_overlong_function_paths() {
         // 51 characters plus prefix, host, and kind: over 64 after mapping.
         let long = "gotatun.a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.verylongfunctionname";
-        let error = metric_id(Some("alice"), long).unwrap_err().to_string();
+        let error = metric_id(Some("alice"), long, "time")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Bencher measure limit"), "{error}");
     }
 
     #[test]
     fn rejects_unrepresentable_function_names() {
-        let error = metric_id(Some("alice"), "gotatun.generic.<u8>.work")
+        let error = metric_id(Some("alice"), "gotatun.generic.<u8>.work", "time")
             .unwrap_err()
             .to_string();
         assert!(error.contains("cannot represent"), "{error}");
