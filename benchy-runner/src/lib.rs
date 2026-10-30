@@ -218,9 +218,6 @@ impl Recorder {
     }
 }
 
-/// Estimate s/sqrt(n), assuming independent interval rates and negligible run-level effects.
-/// Benchmarks request one-second reports; short final fragments and omitted warmup intervals
-/// are excluded. An unavailable side or fewer than two usable intervals yields no bounds.
 fn checked_measurement(
     id: &str,
     label: &str,
@@ -249,6 +246,9 @@ fn checked_measurement(
     ))
 }
 
+/// Estimate s/sqrt(n), assuming independent interval rates and negligible run-level effects.
+/// Benchmarks request one-second reports; short final fragments and omitted warmup intervals
+/// are excluded. An unavailable side or fewer than two usable intervals yields no bounds.
 pub fn throughput_uncertainty(
     output: &iperf::IntervalOutput,
     sender: bool,
