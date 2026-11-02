@@ -15,6 +15,10 @@ lock also excludes manual runs. Publishing runs separately on GitHub-hosted
 infrastructure with the Bencher project key. Profiling remains separate from the
 uninstrumented throughput measurements.
 
+The first numeric GotaTun slice now embeds GotaTun only on Alice and uses a leased
+Linux kernel WireGuard peer on Bob for both TCP directions. The kernel endpoint
+and its ownership/recovery logic live in the product benchmark definitions.
+
 The preparation branches are based on the upstream revisions fetched read-only on
 2026-11-02. Source, manifests, workflows, tests and documentation below are counted;
 generated lockfiles are excluded. Counts are approximate review scope, not just
@@ -23,7 +27,7 @@ new executable code. The framework total includes existing code needing review.
 | Slice | Test repository / branch | Review scope |
 | --- | --- | --- |
 | Framework | `Serock3/benchy`, `prep/framework` | ~5,100 lines, including ~4,200 Rust and tests |
-| Core GotaTun | `serock3-bench/gotatun`, `review/gotatun-benchmarks` | ~680 lines |
+| Core GotaTun | `serock3-bench/gotatun`, `review/gotatun-benchmarks` | ~930 lines, including ~710 Rust; kernel peer/lifecycle helper ~195 lines |
 | Hotpath | same, `review/gotatun-hotpath`, above core | ~280 lines; 13 instrumentation lines in product Rust |
 | Dial9 | same, `review/gotatun-dial9`, above hotpath | ~1,460 lines |
 | App workloads | `serock3-bench/mullvadvpn-app`, `review/app-benchmarks` | ~1,330 lines |
@@ -45,6 +49,10 @@ is a proposed landing order, not a runtime requirement.
   endpoints do not depend on hotpath when built individually.
 - GotaTun numeric, hotpath and Dial9 use AWS-LC, matching the product default and
   root lockfile's AWS-LC 1.16.2. MASQUE already uses AWS-LC in its root workspace.
+- The numeric GotaTun tests use Bob's kernel WG peer, generated keys/PSK through
+  stdin, private temporary deployments, existing-interface guards, and ownership
+  labels for cleanup. Both directions omit three seconds of throughput warmup;
+  Alice's process CPU scope includes the full iperf invocation.
 - Six app workloads split three scenarios into upload/download, collecting only
   Alice's local iperf/proxy CPU and throughput. Download UDP also records local
   receiver jitter/loss. WireGuard CPU refers to the userspace MASQUE process,
@@ -69,7 +77,7 @@ The current code preserves Alice-only observations and documents the limit.
 Throughput uncertainty comes from local one-second intervals, assuming negligible
 between-run variance. CPU has no uncertainty bounds. Fresh AWS-LC/app-directional
 baselines are needed before calibrating regression thresholds. Prepared trusted
-publishers select `alice-bob-aws-lc-v1` and `alice-bob-app-v2`; these settings only
+publishers select `alice-bob-kernel-peer-v1` and `alice-bob-app-v2`; these settings only
 take effect when those publishers reach the fork's default branch. Validation
 branch runs currently use the existing default-branch publisher and its testbed,
 in separate Bencher branch series. Renaming the workflow on a branch does not
@@ -81,29 +89,36 @@ do not. Normal errors and Ctrl-C during workloads attempt owned-resource cleanup
 Include lost-controller recovery in operational review; no automatic global cleanup
 is introduced.
 
-## Optional GotaTun I/O follow-up
+## GotaTun peer-isolation decision
 
-Keep the existing TCP iperf upload/download benchmarks for the initial merge. A
-separate experiment can reduce the download workload's dependence on Bob's
-encryption speed without replacing the real network path:
+The I/O experiments are complete enough to select a simpler numeric workload:
+ordinary TCP iperf, with GotaTun on Alice and Linux WireGuard on Bob. The original
+raw UDP/pool/loss-search experiments remain on separate test-fork branches and
+are not part of the proposed upstream slices.
 
-1. Establish a real WireGuard session and prepare fresh encrypted packets on Bob
-   before the measured phase.
-2. Send those packets over the physical link using efficient batched sends, with
-   a sustained traffic pattern rather than a single queue-filling burst.
-3. Keep Alice's normal GotaTun device, kernel, NIC and TUN path. Measure local CPU
-   and payload delivered to a local receiver, including sequence-based loss counts.
-4. Verify that Bob's offered traffic exceeds Alice's processing capacity. Bob's
-   socket/NIC transmission capacity and the link remain possible bottlenecks.
+Five 30-second trials per configuration, each with a three-second omitted warmup,
+give the following means and sample SD across complete runs:
 
-A small custom UDP workload may replace TCP iperf for this experiment; the
-WireGuard wire format stays unchanged. Encrypted buffers cannot be replayed in a
-loop: each packet needs a unique counter in a valid session, and buffer memory
-must be budgeted. Production replay protection and session handling stay enabled.
-Traffic must cross the actual NICs; localhost or an in-memory transport would omit
-the kernel/NIC I/O behavior this experiment is intended to measure.
+| Direction relative to Alice | Kernel/kernel headroom control | GotaTun Alice, kernel Bob | GotaTun on both hosts |
+| --- | --- | --- | --- |
+| Download | 8.357 ± 0.248 Gb/s | 2.647 ± 0.010 Gb/s (0.37% CV) | 2.658 ± 0.052 Gb/s |
+| Upload | 7.148 ± 0.690 Gb/s | 4.537 ± 0.053 Gb/s (1.16% CV) | 2.655 ± 0.050 Gb/s |
 
-This follow-up does not block reviewing or merging the current benchmarks.
+The old upload configuration was limited by Bob's receive path. Even the lowest
+kernel upload control (6.61 Gb/s) exceeded the maximum mixed upload trial
+(4.58 Gb/s). The physical link is 10 Gb/s; a previous 6 Gb/s UDP control was a
+chosen offered rate, not a link ceiling. TCP packetization/ACK/offload work differs
+from the raw UDP workload, so its earlier ~3.4 Gb/s upload is not a universal
+GotaTun transmit ceiling.
+
+Numeric throughput and CPU still use Alice's local observations in either
+direction. The new peer/warmup configuration needs fresh Bencher baselines;
+interval uncertainty alone does not represent the observed between-run spread.
+Recheck kernel peer headroom as GotaTun improves. Profiling workloads remain
+separate review layers, and their controllers are unchanged by this numeric
+peer change. Old review tips are preserved under
+`archive/pre-kernel-peer-*-20261103`; the hotpath/Dial9 layers are rebased above the
+updated first slice. Fork main branches remain untouched.
 
 ## History cleanup proposal
 
@@ -153,6 +168,13 @@ preparation.
 - Live occupied-port validation produced a failed result, preserved the unrelated
   listener, and removed both TUN interfaces. Ctrl-C during a real transfer produced
   a failed result and removed both endpoints, interfaces and the owned iperf server.
+- The kernel-peer first slice passed direct 30-second live validation in both
+  directions (~4.62 Gb/s upload and ~2.66 Gb/s download). Its artifacts retain the
+  existing schema/shared measures, identify the kernel peer and omitted warmup,
+  and use exactly 30 local intervals for throughput uncertainty. CPU has no bounds.
+  Invalid warmup failed before setup, an occupied peer interface was preserved,
+  and interruption recorded failure and cleaned both owned endpoints. The rebased
+  hotpath workspace passed tests/Clippy, and the Dial9 workspace passed build checks.
 
 The latest app follow-up requires receiver jitter/loss rather than silently
 omitting them. The successful live artifact already contains both fields for
