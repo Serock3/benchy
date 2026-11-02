@@ -54,14 +54,16 @@ is a proposed landing order, not a runtime requirement.
 - Configuration/measurement failures write failed result artifacts. Cleanup errors
   cannot turn a failed or unclean run into success.
 
-## Measurement limits to resolve before rollout
+## Measurement interpretation and operational limits
 
 UDP sender rate is offered load, not delivered goodput. Upload can hide downstream
 loss. At a requested 10 Gb/s, the validation downloads showed about 11% packet loss
 for 1100-byte datagrams and 66% for 2200-byte datagrams. These are stress workloads;
 do not interpret an upload rate as delivered throughput or that loss as a newly
-introduced correctness regression. Decide whether upload should remain diagnostic,
-be omitted, or include peer receiver observations before relying on it for alerts.
+introduced correctness regression. MASQUE will remain a coupled end-to-end test;
+isolating Alice's upload/download processing capacity from Bob is not a goal for
+this protocol. Interpret the local throughput, CPU and available receiver loss
+together. The upload sender rate alone cannot support delivery-regression alerts.
 The current code preserves Alice-only observations and documents the limit.
 
 Throughput uncertainty comes from local one-second intervals, assuming negligible
@@ -78,6 +80,30 @@ leave remote resources. Numeric/Dial9 endpoints have leases; generic proxy progr
 do not. Normal errors and Ctrl-C during workloads attempt owned-resource cleanup.
 Include lost-controller recovery in operational review; no automatic global cleanup
 is introduced.
+
+## Optional GotaTun I/O follow-up
+
+Keep the existing TCP iperf upload/download benchmarks for the initial merge. A
+separate experiment can reduce the download workload's dependence on Bob's
+encryption speed without replacing the real network path:
+
+1. Establish a real WireGuard session and prepare fresh encrypted packets on Bob
+   before the measured phase.
+2. Send those packets over the physical link using efficient batched sends, with
+   a sustained traffic pattern rather than a single queue-filling burst.
+3. Keep Alice's normal GotaTun device, kernel, NIC and TUN path. Measure local CPU
+   and payload delivered to a local receiver, including sequence-based loss counts.
+4. Verify that Bob's offered traffic exceeds Alice's processing capacity. Bob's
+   socket/NIC transmission capacity and the link remain possible bottlenecks.
+
+A small custom UDP workload may replace TCP iperf for this experiment; the
+WireGuard wire format stays unchanged. Encrypted buffers cannot be replayed in a
+loop: each packet needs a unique counter in a valid session, and buffer memory
+must be budgeted. Production replay protection and session handling stay enabled.
+Traffic must cross the actual NICs; localhost or an in-memory transport would omit
+the kernel/NIC I/O behavior this experiment is intended to measure.
+
+This follow-up does not block reviewing or merging the current benchmarks.
 
 ## History cleanup proposal
 
@@ -135,5 +161,5 @@ preparation subject was reworded to satisfy the app's 72-character commit-subjec
 policy, preserving its tree and an archive ref of the previous tip.
 
 Pending rollout work includes maintainer review, fresh baseline/threshold
-calibration, UDP upload interpretation, organization/account ownership and
+calibration, organization/account ownership and
 repository reference updates. No upstream rollout has been attempted.
