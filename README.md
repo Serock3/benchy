@@ -8,12 +8,21 @@ The first vertical slice is the two-host GotaTun throughput benchmark. Alice run
 a self-hosted GitHub Actions runner, deploys the benchmark endpoint to Bob over their local link,
 establishes the tunnel, and measures it with iperf3.
 
+Rust 1.95 or newer is required. Workloads use `benchy_runner::Direction` relative to
+Alice and shared throughput/iperf CPU measure definitions. `Process` owns a PID,
+waits for readiness on either output stream, drains output, and stops owned processes
+on normal/error paths. Callers must explicitly clean up; losing the controller or
+SSH connection can still leave remote resources behind.
+
+The `benchy-runner/hotpath` feature enables report conversion for profiling workloads.
+It is off by default, keeping ordinary network endpoints free of hotpath dependencies.
+
 ## Components
 
 - `benchy-cli` discovers packages with `[package.metadata.benchy]` and runs the requested benchmarks
   sequentially.
-- `benchy-runner` provides result recording, GitHub metadata, iperf parsing, and a cross-workflow
-  machine lock.
+- `benchy-runner` provides result recording, GitHub metadata, iperf parsing, a cross-workflow
+  machine lock, local process CPU sampling, and owned local/SSH process management.
 - `benchy-lib` contains the versioned result artifact types shared by benchmark crates and the
   runner.
 - `.github/workflows/run-benchmarks.yml` is the reusable workflow called by product repositories.
