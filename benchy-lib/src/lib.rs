@@ -269,6 +269,8 @@ pub mod iperf {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct UdpEnd {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cpu_utilization_percent: Option<CpuUtilization>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub sum: Option<UdpSummary>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub sum_sent: Option<UdpSummary>,

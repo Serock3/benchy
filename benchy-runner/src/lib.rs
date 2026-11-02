@@ -16,7 +16,51 @@ use chrono::Utc;
 use fs2::FileExt;
 use tokio::process::Command;
 
+pub mod cpu;
+#[cfg(feature = "hotpath")]
 pub mod hotpath;
+pub mod process;
+
+/// Traffic direction relative to the controller (Alice), regardless of iperf's client role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Upload,
+    Download,
+}
+
+impl Direction {
+    pub fn sender(self) -> bool {
+        self == Self::Upload
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Download => "download",
+        }
+    }
+}
+
+pub const THROUGHPUT: MeasurementDefinition = MeasurementDefinition {
+    id: "throughput.network",
+    label: "Throughput",
+    unit: Unit::BitsPerSecond,
+};
+pub const IPERF_CPU: MeasurementDefinition = MeasurementDefinition {
+    id: "cpu.iperf",
+    label: "iperf CPU",
+    unit: Unit::Percent,
+};
+pub const UDP_JITTER: MeasurementDefinition = MeasurementDefinition {
+    id: "udp.jitter",
+    label: "UDP jitter",
+    unit: Unit::Seconds,
+};
+pub const UDP_LOSS: MeasurementDefinition = MeasurementDefinition {
+    id: "udp.lost_percent",
+    label: "UDP packet loss",
+    unit: Unit::Percent,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BenchmarkDefinition {
