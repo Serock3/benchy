@@ -269,7 +269,7 @@ fn publication_context_is_checked_before_writing_an_export() {
     let output_path = temp.path().join("metrics.json");
     let mut context = json!({
         "repository": "owner/gotatun", "run_id": 123456, "run_attempt": 1,
-        "artifact_id": 99, "sha": "abc123", "branch": "main", "pull_request": null
+        "artifact_id": 99, "sha": "abc123", "artifact_branch": "main", "branch": "main", "pull_request": null
     });
     fs::write(&context_path, serde_json::to_vec(&context).unwrap()).unwrap();
     let output = exporter(&fixtures)
