@@ -243,20 +243,31 @@ as JSON only. No commands, workflow files, or scripts from the artifact are exec
 ## Reporting and baseline
 
 `scripts/publish-bencher.sh METRICS_JSON REPORT_JSON MEASURES_JSON` verifies the measures and
-submits the converted metrics. PR reports
-use Bencher branch `pr/<number>` and the PR head SHA, with the target branch and base SHA as the
-start point. The start point is reset for each run so a rebased PR does not keep using an older
-baseline. Pushes to `main` establish baseline history using the same testbed.
+submits the converted metrics. Bencher's branch identity always comes from GitHub's tested source
+branch, independently of the workflow trigger or whether a PR exists:
 
-Manual runs on a feature branch use that same `pr/<number>` series, baseline and PR reporting
-when GitHub identifies exactly one open PR with the tested head repository, branch and commit.
-The publisher checks the raw artifact against its original workflow branch before mapping it
-to the PR series. Manual default-branch runs always remain baseline runs. Without a matching
-open PR, a manual run uses its branch name and has no PR baseline or comment; ambiguous matches
-fail publication. Closed PRs and PRs whose head has advanced are not matched. This lookup does
-not launch benchmarks or change the approval boundary for external contributors: it only assigns
-results from an already-completed run. A manually approved rerun of an external PR workflow
-retains the original PR event and follows the existing fork-PR mapping.
+- Internal branches use their branch name, for example `perf-gso`.
+- Fork branches use `<owner>/<repository>:<branch>`, for example `contributor/gotatun:perf-gso`,
+  to distinguish identical branch names in different repositories.
+
+Opening a PR does not rename the Bencher branch. The publisher still verifies raw artifacts
+against their original workflow labels (including `pr/<number>` for PR workflows); it derives
+the Bencher identity from trusted GitHub metadata. Existing `pr/<number>` reports are historical
+and are not automatically renamed.
+
+PR context supplies reporting and baseline selection separately. PR reports use the tested head
+SHA, with the target branch and base SHA as the start point. The comparison head is reset for each
+PR report so it compares against the base rather than drifting with previous feature results;
+older reports remain stored under the same branch. Pushes to `main` establish baseline history
+using the same testbed.
+
+Manual feature runs also get PR reporting and a base-branch comparison when GitHub identifies
+exactly one open PR with the tested head repository, branch and commit. Manual default-branch
+runs remain baseline runs. Without a matching open PR, a manual run has no PR baseline or comment;
+ambiguous matches fail publication. Closed PRs and PRs whose head has advanced are not matched.
+These rules do not change branch identity. The lookup does not launch benchmarks or change
+the approval boundary for external contributors: it assigns reporting context to an already-
+completed run. GitHub checks attach to the tested commit, including runs without a PR.
 
 The publisher configures percentage-based regression thresholds for the measures in each report:
 

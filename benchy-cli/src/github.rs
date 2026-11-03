@@ -255,10 +255,19 @@ fn resolve(
         }
         _ => bail!("unsupported source event: {}", run.event),
     };
-    let branch = pull_request
-        .as_ref()
-        .map(|pr| format!("pr/{}", pr.number))
-        .unwrap_or_else(|| artifact_branch.clone());
+    // Reporting context must not change the series when a PR is opened later.
+    // A repository qualifier distinguishes identically named fork branches.
+    let source_branch = run
+        .head_branch
+        .as_deref()
+        .context("source run has no branch")?;
+    output_value(source_branch)?;
+    let branch = if run.head_repository.full_name == repository {
+        source_branch.to_owned()
+    } else {
+        validate_repository(&run.head_repository.full_name)?;
+        format!("{}:{source_branch}", run.head_repository.full_name)
+    };
     let pull_request = if let Some(pr) = pull_request {
         ensure!(pr.number > 0, "invalid PR number");
         validate_sha(&pr.base.sha)?;
@@ -499,7 +508,14 @@ mod tests {
             let context = resolve_mock(&event(&run), run, vec![pr(fork)], artifacts())
                 .unwrap()
                 .unwrap();
-            assert_eq!(context.branch, "pr/7");
+            assert_eq!(
+                context.branch,
+                if fork {
+                    "contributor/product:feature"
+                } else {
+                    "feature"
+                }
+            );
             assert_eq!(context.artifact_branch, "pr/7");
             assert_eq!(context.sha, SHA);
             let pr = context.pull_request.as_ref().unwrap();
@@ -511,18 +527,23 @@ mod tests {
     }
 
     #[test]
-    fn manual_runs_join_the_exact_open_pr_and_verify_the_original_branch() {
+    fn manual_runs_use_pr_reporting_without_changing_the_source_branch_identity() {
         let run = run("workflow_dispatch", false);
         let context = resolve_mock(&event(&run), run, vec![pr(false)], artifacts())
             .unwrap()
             .unwrap();
-        assert_eq!(context.branch, "pr/7");
+        assert_eq!(context.branch, "feature");
         assert_eq!(context.artifact_branch, "feature");
         let pr = context.pull_request.as_ref().unwrap();
         assert_eq!(pr.number, 7);
         assert_eq!(pr.base_branch, "main");
         assert_eq!(pr.base_sha, BASE_SHA);
-        assert!(context.outputs().unwrap().contains("source-branch=pr/7\n"));
+        assert!(
+            context
+                .outputs()
+                .unwrap()
+                .contains("source-branch=feature\n")
+        );
         assert!(context.outputs().unwrap().contains("pr-number=7\n"));
 
         let mut benchmark: Benchmark =
@@ -536,6 +557,58 @@ mod tests {
         assert!(context.verify(std::slice::from_ref(&benchmark)).is_ok());
         benchmark.branch = "pr/7".into();
         assert!(context.verify(&[benchmark]).is_err());
+    }
+
+    #[test]
+    fn branch_identity_is_stable_before_and_after_opening_a_pr() {
+        let manual_run = run("workflow_dispatch", false);
+        let before = resolve_mock(&event(&manual_run), manual_run.clone(), vec![], artifacts())
+            .unwrap()
+            .unwrap();
+        let after = resolve_mock(
+            &event(&manual_run),
+            manual_run,
+            vec![pr(false)],
+            artifacts(),
+        )
+        .unwrap()
+        .unwrap();
+        let pr_run = run("pull_request", false);
+        let automatic = resolve_mock(&event(&pr_run), pr_run, vec![pr(false)], artifacts())
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.branch, "feature");
+        assert_eq!(before.branch, after.branch);
+        assert_eq!(before.branch, automatic.branch);
+        assert!(before.pull_request.is_none());
+        assert_eq!(after.pull_request.unwrap().number, 7);
+        assert_eq!(automatic.pull_request.unwrap().number, 7);
+        assert_eq!(before.artifact_branch, "feature");
+        assert_eq!(automatic.artifact_branch, "pr/7");
+    }
+
+    #[test]
+    fn fork_branch_identity_is_independent_of_pr_number_and_other_repositories() {
+        let mut identities = Vec::new();
+        for (repository, number) in [
+            ("contributor/product", 7),
+            ("contributor/product", 8),
+            ("someone-else/product", 9),
+        ] {
+            let mut run = run("pull_request", true);
+            run["head_repository"]["full_name"] = json!(repository);
+            let mut pr = pr(true);
+            pr["number"] = json!(number);
+            pr["head"]["repo"]["full_name"] = json!(repository);
+            let context = resolve_mock(&event(&run), run, vec![pr], artifacts())
+                .unwrap()
+                .unwrap();
+            assert_eq!(context.branch, format!("{repository}:feature"));
+            assert_eq!(context.pull_request.unwrap().number, number);
+            identities.push(context.branch);
+        }
+        assert_eq!(identities[0], identities[1]);
+        assert_ne!(identities[0], identities[2]);
     }
 
     #[test]
@@ -589,7 +662,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(context.branch, "pr/7");
+        assert_eq!(context.branch, "contributor/product:feature");
         assert_eq!(context.pull_request.as_ref().unwrap().number, 7);
     }
 
@@ -612,7 +685,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(context.branch, "pr/7");
+        assert_eq!(context.branch, "contributor/product:feature");
         assert_eq!(context.pull_request.as_ref().unwrap().number, 7);
     }
 

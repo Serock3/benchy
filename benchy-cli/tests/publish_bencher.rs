@@ -193,14 +193,14 @@ fn failed_upload_does_not_add_a_success_link() {
 }
 
 #[test]
-fn pr_reporting_uses_tested_head_and_base_instead_of_publisher_commit() {
+fn pr_reporting_uses_the_source_branch_independently_of_the_pr_number() {
     let mut publisher = Publisher::new("existing");
     let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let base = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     publisher
         .command
         .env("BENCHY_SOURCE_SHA", sha)
-        .env("BENCHY_SOURCE_BRANCH", "pr/7")
+        .env("BENCHY_SOURCE_BRANCH", "contributor/product:feature")
         .env("BENCHY_PR_NUMBER", "7")
         .env("BENCHY_BASE_BRANCH", "main")
         .env("BENCHY_BASE_SHA", base)
@@ -209,7 +209,9 @@ fn pr_reporting_uses_tested_head_and_base_instead_of_publisher_commit() {
     let output = publisher.command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let calls = publisher.read("calls.log");
-    assert!(calls.contains(&format!("--branch pr/7 --hash {sha}")));
+    assert!(calls.contains(&format!(
+        "--branch contributor/product:feature --hash {sha}"
+    )));
     assert!(calls.contains("--github-actions github-test-token"));
     assert!(calls.contains("--ci-only-thresholds"));
     assert!(calls.contains("--ci-number 7 --start-point main"));

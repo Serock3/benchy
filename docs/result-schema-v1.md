@@ -54,6 +54,11 @@ PR SHA refers to a merge commit. These overrides also support checking out a sou
 different from the workflow's own revision. Run IDs and attempts still identify the benchmark
 workflow, rather than the later publishing workflow.
 
+This raw workflow label is separate from Bencher's branch identity. The publisher groups reports
+by GitHub's source branch name, qualified as `<owner>/<repository>:<branch>` for forks, regardless
+of whether the run was manual or triggered by a PR. PR numbers select reporting context rather
+than the Bencher branch.
+
 `status` is either `success` or `failed`. A failed result may include an `error` string and may have
 no measurements. Results from successful and failed runs retain their parameters and environment
 metadata.
