@@ -14,6 +14,7 @@ use serde_json::Value;
 #[derive(Clone, Debug, Deserialize)]
 struct Repository {
     full_name: String,
+    default_branch: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -80,6 +81,8 @@ pub struct Publication {
     pub run_attempt: u64,
     pub artifact_id: u64,
     pub sha: String,
+    /// Branch recorded by the benchmark workflow, before publication mapping.
+    pub artifact_branch: String,
     pub branch: String,
     pub pull_request: Option<PullRequestContext>,
 }
@@ -97,7 +100,7 @@ impl Publication {
         for benchmark in benchmarks {
             ensure!(
                 benchmark.commit == self.sha
-                    && benchmark.branch == self.branch
+                    && benchmark.branch == self.artifact_branch
                     && benchmark.run_id.as_deref() == Some(self.run_id.to_string().as_str())
                     && benchmark.environment.get("GITHUB_RUN_ATTEMPT")
                         == Some(&self.run_attempt.to_string()),
@@ -203,7 +206,7 @@ fn resolve(
     );
     validate_sha(&run.head_sha)?;
 
-    let (branch, pull_request) = match run.event.as_str() {
+    let (artifact_branch, pull_request) = match run.event.as_str() {
         "pull_request" => {
             // GitHub can omit run.pull_requests for fork PRs. Recover candidates using
             // GitHub's pull request head filter or the commit association API, but never
@@ -223,50 +226,50 @@ fn resolve(
                     })
                     .collect::<Result<_>>()?
             };
-            let mut candidates = candidates.into_iter().filter(|pr| {
-                pr.state == "open"
-                    && pr.head.sha == run.head_sha
-                    && pr
-                        .head
-                        .repo
-                        .as_ref()
-                        .is_some_and(|repo| repo.full_name == run.head_repository.full_name)
-                    && Some(&pr.head.branch) == run.head_branch.as_ref()
-                    && pr
-                        .base
-                        .repo
-                        .as_ref()
-                        .is_some_and(|repo| repo.full_name == repository)
-            });
-            let Some(pr) = candidates.next() else {
+            let Some(pr) = matching_pull_request(&run, repository, candidates)? else {
                 return Ok(None);
             };
-            ensure!(
-                candidates.next().is_none(),
-                "ambiguous PR association for source run"
-            );
-            ensure!(pr.number > 0, "invalid PR number");
-            validate_sha(&pr.base.sha)?;
-            output_value(&pr.base.branch)?;
-            (
-                format!("pr/{}", pr.number),
-                Some(PullRequestContext {
-                    number: pr.number,
-                    base_branch: pr.base.branch,
-                    base_sha: pr.base.sha,
-                }),
-            )
+            (format!("pr/{}", pr.number), Some(pr))
         }
         "push" | "workflow_dispatch" | "schedule" => {
             ensure!(
                 run.head_repository.full_name == repository,
                 "non-PR run comes from a different repository"
             );
-            let branch = run.head_branch.context("source run has no branch")?;
-            output_value(&branch)?;
-            (branch, None)
+            let branch = run
+                .head_branch
+                .as_ref()
+                .context("source run has no branch")?;
+            output_value(branch)?;
+            // Default-branch runs remain baseline runs, even if that branch is
+            // also the head of an open PR. Only manual feature runs need lookup.
+            let pr = if run.event == "workflow_dispatch"
+                && event.repository.default_branch.as_ref() != Some(branch)
+            {
+                let candidates = pull_request_candidates(&run, repository, api)?;
+                matching_pull_request(&run, repository, candidates)?
+            } else {
+                None
+            };
+            (branch.clone(), pr)
         }
         _ => bail!("unsupported source event: {}", run.event),
+    };
+    let branch = pull_request
+        .as_ref()
+        .map(|pr| format!("pr/{}", pr.number))
+        .unwrap_or_else(|| artifact_branch.clone());
+    let pull_request = if let Some(pr) = pull_request {
+        ensure!(pr.number > 0, "invalid PR number");
+        validate_sha(&pr.base.sha)?;
+        output_value(&pr.base.branch)?;
+        Some(PullRequestContext {
+            number: pr.number,
+            base_branch: pr.base.branch,
+            base_sha: pr.base.sha,
+        })
+    } else {
+        None
     };
     let expected_name = format!("benchmark-results-{}-{}", run.id, run.run_attempt);
     let artifacts: Artifacts = serde_json::from_value(api(&format!(
@@ -290,9 +293,38 @@ fn resolve(
         run_attempt: run.run_attempt,
         artifact_id: artifact.id,
         sha: run.head_sha,
+        artifact_branch,
         branch,
         pull_request,
     }))
+}
+
+fn matching_pull_request(
+    run: &Run,
+    repository: &str,
+    candidates: Vec<PullRequest>,
+) -> Result<Option<PullRequest>> {
+    let mut candidates = candidates.into_iter().filter(|pr| {
+        pr.state == "open"
+            && pr.head.sha == run.head_sha
+            && pr
+                .head
+                .repo
+                .as_ref()
+                .is_some_and(|repo| repo.full_name == run.head_repository.full_name)
+            && Some(&pr.head.branch) == run.head_branch.as_ref()
+            && pr
+                .base
+                .repo
+                .as_ref()
+                .is_some_and(|repo| repo.full_name == repository)
+    });
+    let pr = candidates.next();
+    ensure!(
+        candidates.next().is_none(),
+        "ambiguous PR association for source run"
+    );
+    Ok(pr)
 }
 
 /// GitHub omits `run.pull_requests` for fork PRs. Recover candidates using GitHub's pull
@@ -409,7 +441,7 @@ mod tests {
 
     fn event(run: &Value) -> Event {
         serde_json::from_value(
-            json!({"action": "completed", "repository": {"full_name": REPO}, "workflow_run": run}),
+            json!({"action": "completed", "repository": {"full_name": REPO, "default_branch": "main"}, "workflow_run": run}),
         )
         .unwrap()
     }
@@ -468,6 +500,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(context.branch, "pr/7");
+            assert_eq!(context.artifact_branch, "pr/7");
             assert_eq!(context.sha, SHA);
             let pr = context.pull_request.as_ref().unwrap();
             assert_eq!(pr.number, 7);
@@ -475,6 +508,67 @@ mod tests {
             assert_eq!(pr.base_sha, BASE_SHA);
             assert!(context.outputs().unwrap().contains("pr-number=7\n"));
         }
+    }
+
+    #[test]
+    fn manual_runs_join_the_exact_open_pr_and_verify_the_original_branch() {
+        let run = run("workflow_dispatch", false);
+        let context = resolve_mock(&event(&run), run, vec![pr(false)], artifacts())
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.branch, "pr/7");
+        assert_eq!(context.artifact_branch, "feature");
+        let pr = context.pull_request.as_ref().unwrap();
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.base_branch, "main");
+        assert_eq!(pr.base_sha, BASE_SHA);
+        assert!(context.outputs().unwrap().contains("source-branch=pr/7\n"));
+        assert!(context.outputs().unwrap().contains("pr-number=7\n"));
+
+        let mut benchmark: Benchmark =
+            serde_json::from_str(include_str!("../tests/fixtures/gotatun.json")).unwrap();
+        benchmark.commit = SHA.into();
+        benchmark.branch = "feature".into();
+        benchmark.run_id = Some("11".into());
+        benchmark
+            .environment
+            .insert("GITHUB_RUN_ATTEMPT".into(), "2".into());
+        assert!(context.verify(std::slice::from_ref(&benchmark)).is_ok());
+        benchmark.branch = "pr/7".into();
+        assert!(context.verify(&[benchmark]).is_err());
+    }
+
+    #[test]
+    fn manual_runs_do_not_join_closed_stale_or_unrelated_prs() {
+        let run = run("workflow_dispatch", false);
+        let mut closed = pr(false);
+        closed["state"] = json!("closed");
+        let mut stale = pr(false);
+        stale["head"]["sha"] = json!(BASE_SHA);
+        let mut other_branch = pr(false);
+        other_branch["head"]["ref"] = json!("other-feature");
+        let mut other_base = pr(false);
+        other_base["base"]["repo"]["full_name"] = json!("other/repo");
+        for pr in [closed, stale, other_branch, other_base, pr(true)] {
+            let context = resolve_mock(&event(&run), run.clone(), vec![pr], artifacts())
+                .unwrap()
+                .unwrap();
+            assert_eq!(context.branch, "feature");
+            assert!(context.pull_request.is_none());
+        }
+    }
+
+    #[test]
+    fn default_branch_manual_runs_remain_baselines_even_with_an_open_pr() {
+        let mut run = run("workflow_dispatch", false);
+        run["head_branch"] = json!("main");
+        let mut pr = pr(false);
+        pr["head"]["ref"] = json!("main");
+        let context = resolve_mock(&event(&run), run, vec![pr], artifacts())
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.branch, "main");
+        assert!(context.pull_request.is_none());
     }
 
     #[test]
@@ -544,10 +638,15 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_prs() {
-        let run = run("pull_request", true);
-        let mut other = pr(true);
-        other["number"] = json!(8);
-        assert!(resolve_mock(&event(&run), run, vec![pr(true), other], artifacts()).is_err());
+        for source_event in ["pull_request", "workflow_dispatch"] {
+            let mut run = run(source_event, false);
+            run["pull_requests"] = json!([]);
+            let mut other = pr(false);
+            other["number"] = json!(8);
+            let error =
+                resolve_mock(&event(&run), run, vec![pr(false), other], artifacts()).unwrap_err();
+            assert!(error.to_string().contains("ambiguous PR association"));
+        }
     }
 
     #[test]
